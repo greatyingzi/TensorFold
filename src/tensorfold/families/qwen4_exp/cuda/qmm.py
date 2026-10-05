@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 import torch
@@ -210,6 +211,9 @@ def _reduce(PART, OUT, total, SK: tl.constexpr, BLOCK: tl.constexpr, F32: tl.con
 CONFIG = {16: (4, 4, 3), 32: (2, 4, 3), 64: (2, 4, 2), 128: (1, 8, 2)}
 
 # K slices are fixed per shape to preserve summation order; other launch settings do not change bits.
+_SK_TABLE = os.environ.get("TF_QF_SK_TABLE", "") not in ("", "0")
+
+
 SHAPES16 = {
     (324, 10240): (32, 2, 4, 3, 64),         # hyper-connection down + inject
     (320, 10240): (32, 2, 4, 3, 64),         # a mixer's down
@@ -218,6 +222,17 @@ SHAPES16 = {
     (2560, 6144): (8, 2, 4, 2, 64),          # DeltaNet / attention output
     (13952, 2560): (1, 2, 4, 3, 64),         # attention q|gate, k, v, indexer
     (248320, 2560): (1, 4, 4, 2, 64),        # head
+}
+
+
+# Decode-tuned split-K for tp=2 ranks, measured on 2x DGX Spark 2026-10-05 (TF_QF_SK_TABLE=1).
+# The engine fuses projections, so these are the shapes it actually issues per rank; each value is the
+# best over M=1..4 with M=8 checked for regressions (hc shapes keep their old value on purpose).
+SHAPES_TP2 = {
+    (8240, 2560): 10,        # attention q|gate|k|v|indexer, fused
+    (7296, 2560): 10,        # DeltaNet q/k/v/z/b/a, fused
+    (2560, 3072): 2,         # attention / DeltaNet output
+    (2560, 2560): 10,        # MTP fc_embedding / fc_hidden
 }
 
 

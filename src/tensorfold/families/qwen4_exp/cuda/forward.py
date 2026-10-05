@@ -38,6 +38,10 @@ def _mm(x: torch.Tensor, q: qmm.Q4, xs: torch.Tensor, out: torch.Tensor, b: Buff
     if not isinstance(q, qmm.Q4):                 # an EXL3 pack's matrix (``exl3_mm``): prompts on its prompt path
         return q.prefill(x, out) if b.prefill else q(x, out)
     mm = qmm.prefill_matmul if b.prefill else qmm.matmul
+    if not b.prefill and qmm._SK_TABLE:                    # decode-tuned split-K, clamped to the buffer
+        want = qmm.SHAPES_TP2.get((q.n, q.k))
+        if want and want * x.shape[0] * q.n <= b.part.numel():
+            return mm(x, q, xs, out=out, part=b.part, sk=want, **kw)
     return mm(x, q, xs, out=out, part=b.part, **kw)
 
 
