@@ -110,6 +110,9 @@ fn loadInner(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const l
                     if (li >= prefix_limit) continue;
                 }
                 if (std.mem.startsWith(u8, ckpt, "model.dfly_layers.")) continue;
+                if (std.mem.indexOf(u8, ckpt, "engram_layer.") != null) continue;
+                if (std.mem.startsWith(u8, ckpt, "vit.")) continue;
+                if (std.mem.eql(u8, ckpt, "lm_head.weight") or std.mem.eql(u8, ckpt, "model.embed_tokens.weight")) continue;
             }
             const t = sf.get(ckpt) orelse return error.IndexedTensorMissing;
             var base = ckpt;

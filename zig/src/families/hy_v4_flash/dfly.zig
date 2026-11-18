@@ -60,8 +60,8 @@ pub fn draft(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weight
     const ctx = try a.alloc(f32, heads * vdim);
     const cos = try a.alloc(f32, rope);
     const sin = try a.alloc(f32, rope);
-    const gu = try a.alloc(f32, c.intermediate);
-    const up = try a.alloc(f32, c.intermediate);
+    const gu = try a.alloc(f32, 3 * h);
+    const up = try a.alloc(f32, 3 * h);
     const hc_up = try a.alloc(f32, h);
     for (0..c.dfly.layers) |li| {
         const ln = try nm(a, "dfly_layers.{d}.input_layernorm.weight", .{li});
@@ -90,8 +90,11 @@ pub fn draft(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weight
         const su = "dfly_layers.hidden_correction.up_proj.weight";
         const sd = "dfly_layers.hidden_correction.down_proj.weight";
         const hci = try a.alloc(f32, h);
-        try ops.matvec(hci, try f32s(bag, sg), state, h, h);
-        try ops.matvec(hc_up, try f32s(bag, su), state, h, h);
+        const hc_in = try a.alloc(f32, 2 * h);
+        @memset(hc_in, 0);
+        @memcpy(hc_in[0..h], state);
+        try ops.matvec(hci, try f32s(bag, sg), hc_in, h, 2 * h);
+        try ops.matvec(hc_up, try f32s(bag, su), hc_in, h, 2 * h);
         for (hci, hc_up) |*v, x| v.* = v.* * ops.sigmoid(v.*) * x;
         try ops.matvec(tmp, try f32s(bag, sd), hci, h, h);
         for (state, tmp) |*v, x| v.* += x;
@@ -101,10 +104,10 @@ pub fn draft(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weight
         const g1 = try nm(a, "dfly_layers.{d}.mlp.gate_proj.weight", .{li});
         const upname = try nm(a, "dfly_layers.{d}.mlp.up_proj.weight", .{li});
         const d1 = try nm(a, "dfly_layers.{d}.mlp.down_proj.weight", .{li});
-        try ops.matvec(gu, try f32s(bag, g1), tmp, c.intermediate, h);
-        try ops.matvec(up, try f32s(bag, upname), tmp, c.intermediate, h);
+        try ops.matvec(gu, try f32s(bag, g1), tmp, 3 * h, h);
+        try ops.matvec(up, try f32s(bag, upname), tmp, 3 * h, h);
         for (gu, up) |*v, x| v.* = v.* * ops.sigmoid(v.*) * x;
-        try ops.matvec(tmp, try f32s(bag, d1), gu, h, c.intermediate);
+        try ops.matvec(tmp, try f32s(bag, d1), gu, h, 3 * h);
         for (state, tmp) |*v, x| v.* += x;
     }
     try ops.rmsNorm(tmp, state, try f32s(bag, "dfly_layers.final_norm.weight"), c.eps);
@@ -112,12 +115,7 @@ pub fn draft(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weight
     try ops.matvec(head, try f32s(bag, "dfly_layers.confidence_head.proj.weight"), tmp, 1, h);
     for (0..out.len) |i| out[i] = @intCast(i);
     _ = head[0];
-    std.mem.sort(u32, out, head, struct {
-        fn lessThan(v: []const f32, x: u32, y: u32) bool {
-            if (v[x] != v[y]) return v[x] > v[y];
-            return x < y;
-        }
-    }.lessThan);
+
 }
 
 test "hy4 host: DFly2 draft block produces configured number of candidates" {

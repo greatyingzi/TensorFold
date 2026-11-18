@@ -27,7 +27,9 @@ pub fn main(init: std.process.Init) !void {
     const token = try std.fmt.parseInt(usize, token_s, 10);
     const layers = try std.fmt.parseInt(usize, layers_s, 10);
     const io = init.io;
+    std.debug.print("STEP inspect\n", .{});
     const adm = try loader.inspect(a, io, dir);
+    std.debug.print("STEP inspect done\n", .{});
     const meta = adm.meta;
     var c = try config.read(a, io, dir);
     if (layers > 0 and layers < c.layers) {
@@ -39,7 +41,17 @@ pub fn main(init: std.process.Init) !void {
         c.dfly.target_count = 1;
     }
     var bag = try weights.loadPrefix(a, io, dir, &meta, layers);
+    std.debug.print("STEP load done\n", .{});
+    const small_vocab: usize = @min(c.vocab, 256);
+    c.vocab = @intCast(small_vocab);
+    const emb = try a.alloc(f32, small_vocab * c.hidden);
+    for (emb, 0..) |*v, i| v.* = @as(f32, @floatFromInt(i % 17)) - 8.0;
+    try bag.map.put("embed_tokens.weight", .{ .name = "embed_tokens.weight", .rank = 2, .shape = .{ small_vocab, c.hidden, 0 }, .value = .{ .f32s = emb } });
+    const head = try a.alloc(f32, small_vocab * c.hidden);
+    for (head, 0..) |*v, i| v.* = @as(f32, @floatFromInt(i % 13)) - 6.0;
+    try bag.map.put("lm_head.weight", .{ .name = "lm_head.weight", .rank = 2, .shape = .{ small_vocab, c.hidden, 0 }, .value = .{ .f32s = head } });
     defer bag.deinit();
+    std.debug.print("STEP session\n", .{});
     var s = try session.Session.init(a, &c, &bag, 2);
     defer s.deinit();
     const logits = try s.step(token);
