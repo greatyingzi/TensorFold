@@ -1,5 +1,6 @@
 //! Compressed Lightning Indexer: pool 4-token groups and pick the groups a query recalls.
-//! Scope: pooling, scoring, locality mask and recall selection; rotary phases are supplied by the caller.
+
+// Scope: pooling, scoring, locality mask and recall selection; rotary phases come from the caller.
 const std = @import("std");
 const config = @import("config.zig");
 const weights = @import("weights.zig");
