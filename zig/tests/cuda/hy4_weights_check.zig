@@ -1,4 +1,4 @@
-// ! The real Q4 pack through the GPU: one expert's affine-4 slice packed and read back ! against the CPU dequantize-and-dot, so the serving path has a numeric witness.
+// One tensor's expert-th leading-axis slice of a safetensors file.
 const std = @import("std");
 const cuda = @import("cuda");
 const check = @import("check.zig");

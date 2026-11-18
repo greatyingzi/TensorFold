@@ -93,7 +93,7 @@ pub fn run(gpu: Gpu) !void {
     var a4 = try qlinear.Affine4Kernels.resolve(gpu.d, mods[0], mods[1], mods[2], mods[3], sms, true);
     defer a4.deinit();
 
-// 16 distinct experts so a token streams its weights instead of re-reading one pair from L2: gate_up (latent -> 2*inter) then down (inter -> latent) per expert, as LatentMoE runs them.
+// 16 distinct experts: a token streams its weights instead of re-reading one pair from L2.
     var stems: [top_k]Proj = undefined;
     var downs: [top_k]Proj = undefined;
     for (&stems) |*e| e.* = try make(&r, "expert gate_up", 2 * inter, latent, 16);
@@ -119,7 +119,7 @@ pub fn run(gpu: Gpu) !void {
         const token = ms / 3.0;
         std.debug.print("hy4 experts rows={d}  {d:.2} ms/token  {d:.1} tok/s  (streaming {d} experts x {d} layers)\n", .{ rows, token, 1000.0 / token, top_k, moe_layers });
     }
-// The same 16 experts through the segmented launch: 2 launches a layer instead of 32.
+// The segmented launch: 2 launches a layer instead of 32.
     const Out = qlinear.Affine4Kernels.Out;
     var stem_outs: [top_k]Out = undefined;
     var down_outs: [top_k]Out = undefined;
@@ -146,7 +146,7 @@ pub fn run(gpu: Gpu) !void {
         const gtok = gms / 3.0;
         std.debug.print("hy4 experts grouped rows={d}  {d:.2} ms/token  {d:.1} tok/s  (8 launches a layer)\n", .{ rows, gtok, 1000.0 / gtok });
     }
-// Hy4's MLA attention, the math around the projections: absorb 192, chunked latent attention over a 4096-key cache, merge, expand 256, output gate.
+// MLA math: absorb 192, chunks over a 4096-key cache, merge, expand 256, gate.
     const heads = 64;
     const lw = 512;
     const cache_rows = 4096;
