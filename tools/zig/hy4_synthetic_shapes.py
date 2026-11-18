@@ -301,9 +301,9 @@ _HC_SHAPES = {
 _INDEXER_SHAPES = {
     "head_weight_projection.weight": lambda d: (d["IDXH"], d["H"]),
     "intra_group_ape": lambda d: (d["IDXR"], d["IDXD"]),
-    "key_gate_projection.weight": lambda d: (d["IDXH"] * d["IDXD"], d["H"]),
+    "key_gate_projection.weight": lambda d: (d["IDXD"], d["IDXD"]),
     "key_norm.weight": lambda d: (d["IDXD"],),
-    "key_value_projection.weight": lambda d: (d["IDXD"], d["H"]),
+    "key_value_projection.weight": lambda d: (d["IDXD"], d["IDXD"]),
     "query_projection.weight": lambda d: (d["IDXH"] * d["IDXD"], d["QL"]),
     "token_key_norm.weight": lambda d: (d["IDXD"],),
     "token_key_projection.weight": lambda d: (d["IDXD"], d["H"]),

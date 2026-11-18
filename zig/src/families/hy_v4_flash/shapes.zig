@@ -100,9 +100,10 @@ pub fn expected(c: *const cfg.Config, name: []const u8, lookup_len: usize) ?Shap
         const x = s[ip.len..];
         if (std.mem.eql(u8, x, "head_weight_projection.weight")) return v2(c.index_heads, c.hidden);
         if (std.mem.eql(u8, x, "intra_group_ape")) return v2(c.index_ratio, c.index_dim);
-        if (std.mem.eql(u8, x, "key_gate_projection.weight")) return v2(c.index_heads * c.index_dim, c.hidden);
+        if (std.mem.eql(u8, x, "key_gate_projection.weight")) return v2(c.index_dim, c.index_dim);
         if (std.mem.eql(u8, x, "key_norm.weight") or std.mem.eql(u8, x, "token_key_norm.weight")) return v1(c.index_dim);
-        if (std.mem.eql(u8, x, "key_value_projection.weight") or std.mem.eql(u8, x, "token_key_projection.weight")) return v2(c.index_dim, c.hidden);
+        if (std.mem.eql(u8, x, "key_value_projection.weight")) return v2(c.index_dim, c.index_dim);
+        if (std.mem.eql(u8, x, "token_key_projection.weight")) return v2(c.index_dim, c.hidden);
         if (std.mem.eql(u8, x, "query_projection.weight")) return v2(c.index_heads * c.index_dim, c.q_lora);
     }
 
