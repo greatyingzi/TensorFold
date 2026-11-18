@@ -25,4 +25,5 @@ test "hy4 host: imports" {
     _ = @import("src/families/hy_v4_flash/spec.zig");
     _ = @import("src/families/hy_v4_flash/draft.zig");
     _ = @import("src/families/hy_v4_flash/dfly.zig");
+    _ = @import("src/families/hy_v4_flash/exl3.zig");
 }

@@ -77,6 +77,10 @@ pub const Config = struct {
     norm_topk_prob: bool = false,
     swiglu_limit: f32 = 0,
     mrope_section: [3]u32 = @splat(0),
+    quant_method: []const u8 = "",
+    quant_bits: f32 = 0,
+    quant_codebook: []const u8 = "",
+    quant_scope: []const u8 = "",
     dense_layers: u32 = 0,
     context: u32 = 0,
     window: u32 = 0,
@@ -305,6 +309,23 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) !Config {
             .heads = if (kind == .sliding) c.swa_heads else c.heads,
             .moe = std.mem.eql(u8, mlps[i].string, "sparse"),
         };
+    }
+    if (top.get("quantization_config")) |qv| {
+        if (qv == .object) {
+            const q = qv.object;
+            if (q.get("quant_method")) |v| {
+                if (v == .string) c.quant_method = v.string;
+            }
+            if (q.get("bits")) |v| {
+                if (v == .integer) c.quant_bits = @floatFromInt(v.integer) else if (v == .float) c.quant_bits = @floatCast(v.float);
+            }
+            if (q.get("codebook")) |v| {
+                if (v == .string) c.quant_codebook = v.string;
+            }
+            if (q.get("scope")) |v| {
+                if (v == .string) c.quant_scope = v.string;
+            }
+        }
     }
     try parseEngram(&c, t);
     try parseDrafter(&c, top);

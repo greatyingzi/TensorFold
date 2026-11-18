@@ -7,6 +7,7 @@ const names = @import("tensor_names.zig");
 const shapes = @import("shapes.zig");
 const loader = @import("loader.zig");
 const affine4 = @import("affine4.zig");
+const exl3 = @import("exl3.zig");
 
 pub const Value = union(enum) {
     f32s: []f32,
@@ -93,6 +94,21 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const lo
             const ckpt = item.key_ptr.*;
             const t = sf.get(ckpt) orelse return error.IndexedTensorMissing;
             const want = shapes.expected(&c, ckpt, lookup_len) orelse continue;
+            if (c.quant_method.len > 0 and std.mem.eql(u8, c.quant_method, "exl3")) {
+                try exl3.admit(&c);
+                const tr = try std.mem.concat(a, u8, &.{ ckpt, ".trellis" });
+                if (sf.get(tr)) |tt| {
+                    const sun = try std.mem.concat(a, u8, &.{ ckpt, ".suh" });
+                    const svn = try std.mem.concat(a, u8, &.{ ckpt, ".svh" });
+                    const su = sf.get(sun) orelse return error.MissingExl3Tensor;
+                    const sv = sf.get(svn) orelse return error.MissingExl3Tensor;
+                    if (want.rank != 2) return error.Exl3PackedRankUnsupported;
+                    const buf = try exl3.decodeRaw(a, tt.bytes, su.bytes, sv.bytes, want.a, want.b, c.quant_bits, try exl3.codebook(c.quant_codebook));
+                    const ekey = try names.rename(a, ckpt);
+                    try out.map.put(ekey, .{ .name = ekey, .rank = want.rank, .shape = .{ want.a, want.b, 0 }, .value = .{ .f32s = buf } });
+                    continue;
+                }
+            }
             const qn = try std.mem.concat(a, u8, &.{ ckpt, ".weight" });
             if (sf.get(qn)) |qt| {
                 if (qt.dtype == .u32) {
