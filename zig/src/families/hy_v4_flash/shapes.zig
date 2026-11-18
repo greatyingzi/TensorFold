@@ -124,20 +124,21 @@ pub fn expected(c: *const cfg.Config, name: []const u8, lookup_len: usize) ?Shap
         const head = c.engram.embed / c.engram.heads;
         if (std.mem.eql(u8, s, "engram_layer.lookup_table")) return i32v1(lookup_len);
         if (std.mem.eql(u8, s, "engram_layer.multi_head_embedding.embedding.weight")) return v2(primes(c, layer), c.engram.embed / c.engram.heads);
-        if (std.mem.eql(u8, s, "engram_layer.value_proj.weight")) return v2(c.hidden, c.engram.embed);
+        if (std.mem.eql(u8, s, "engram_layer.value_proj.weight")) return v2(c.hidden, (c.engram.ngram - 1) * c.engram.embed);
         if (std.mem.eql(u8, s, "engram_layer.value_proj.bias")) return v1(c.hidden);
         if (std.mem.eql(u8, s, "engram_layer.unified_pre_gamma")) return v1(c.hidden);
-        if (std.mem.startsWith(u8, s, "engram_layer.unified_per_hc_scales.")) return v1(c.hc_mult);
+        if (std.mem.startsWith(u8, s, "engram_layer.unified_per_hc_scales.")) return v1(c.hidden);
         const ep = "engram_layer.";
         const rest = s[ep.len..];
         const dot = std.mem.indexOfScalar(u8, rest, '.') orelse return null;
         const kind_name = rest[0..dot];
         const after = rest[dot + 1 ..];
         if (std.mem.eql(u8, kind_name, "key_projs")) {
-            if (std.mem.startsWith(u8, after, "weight")) return v2(head, c.hidden);
-            if (std.mem.startsWith(u8, after, "bias")) return v1(head);
+            if (std.mem.endsWith(u8, after, "weight")) return v2(c.hidden, (c.engram.ngram - 1) * c.engram.embed);
+            if (std.mem.endsWith(u8, after, "bias")) return v1(c.hidden);
         }
-        if (std.mem.eql(u8, kind_name, "norm_key") or std.mem.eql(u8, kind_name, "norm_query") or std.mem.eql(u8, kind_name, "lookup_per_head_norms")) return v1(head);
+        if (std.mem.eql(u8, kind_name, "lookup_per_head_norms")) return v1(head);
+        if (std.mem.eql(u8, kind_name, "norm_key") or std.mem.eql(u8, kind_name, "norm_query")) return v1(c.hidden);
     }
     return null;
 }

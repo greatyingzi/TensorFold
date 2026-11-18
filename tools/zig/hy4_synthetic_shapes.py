@@ -431,22 +431,24 @@ def shape_for(name, cfg, d):
             if s == "engram_layer.multi_head_embedding.embedding.weight":
                 return (engram_bucket_total(cfg, li), d["ENG_EMBED"] // d["ENG_HEADS"])
             if s == "engram_layer.value_proj.weight":
-                return (H, d["ENG_EMBED"])
+                return (H, 2 * d["ENG_EMBED"])
             if s == "engram_layer.value_proj.bias":
                 return (H,)
             if s == "engram_layer.unified_pre_gamma":
                 return (H,)
             if s.startswith("engram_layer.unified_per_hc_scales."):
-                return (d["HC"],)
+                return (H,)
             em = re.match(
                 r"engram_layer[.](key_projs|norm_key|norm_query|lookup_per_head_norms|unified_per_hc_scales)[.]([0-9]+)[.](weight|bias)$", s)
             if em:
                 kind, which = em.group(1), em.group(3)
                 if kind == "key_projs":
-                    return (head, H) if which == "weight" else (head,)
+                    return (H, 2 * d["ENG_EMBED"]) if which == "weight" else (H,)
                 if kind == "unified_per_hc_scales":
-                    return (d["HC"],)
-                return (head,)
+                    return (H,)
+                if kind == "lookup_per_head_norms":
+                    return (head,)
+                return (H,)
         raise ValueError("no shape rule for tensor: " + name)
 
     m = re.match(r"model[.]dfly_layers[.]([0-9]+)[.](.*)$", name)
