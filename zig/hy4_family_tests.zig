@@ -23,4 +23,5 @@ test "hy4 host: imports" {
     _ = @import("src/families/hy_v4_flash/recall.zig");
     _ = @import("src/families/hy_v4_flash/affine4.zig");
     _ = @import("src/families/hy_v4_flash/spec.zig");
+    _ = @import("src/families/hy_v4_flash/draft.zig");
 }
