@@ -42,6 +42,11 @@ pub const Drafter = struct {
 
 pub const Vision = struct {
     present: bool = false,
+    intermediate: u32 = 0,
+    heads: u32 = 0,
+    channels: u32 = 0,
+    positions: u32 = 0,
+    spatial_merge: u32 = 0,
     layers: u32 = 0,
     hidden: u32 = 0,
     patch: u32 = 0,
@@ -227,6 +232,11 @@ fn parseVision(c: *Config, top: std.json.ObjectMap) !void {
     c.vision.patch = try int(o, "patch_size");
     c.vision.merge = try int(o, "spatial_merge_size");
     c.vision.out = try int(o, "out_hidden_size");
+    c.vision.intermediate = try int(o, "intermediate_size");
+    c.vision.heads = try int(o, "num_attention_heads");
+    c.vision.channels = try int(o, "num_channels");
+    c.vision.positions = try int(o, "max_vit_seq_len") + 1;
+    c.vision.spatial_merge = c.vision.merge;
 }
 
 pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) !Config {

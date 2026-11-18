@@ -10,10 +10,11 @@ pub const Shape = struct {
     a: usize = 0,
     b: usize = 0,
     c: usize = 0,
+    d: usize = 0,
 
     pub fn is(self: Shape, rank: u8, shape: []const usize) bool {
-        if (rank != self.rank or rank > 3) return false;
-        const want = [_]usize{ self.a, self.b, self.c };
+        if (rank != self.rank or rank > 4) return false;
+        const want = [_]usize{ self.a, self.b, self.c, self.d };
         return std.mem.eql(usize, want[0..rank], shape[0..rank]);
     }
 };
@@ -35,6 +36,10 @@ fn v2(a: usize, b: usize) Shape {
 }
 fn v3(a: usize, b: usize, c: usize) Shape {
     return .{ .rank = 3, .a = a, .b = b, .c = c };
+}
+
+fn v4(a: usize, b: usize, c: usize, d: usize) Shape {
+    return .{ .rank = 4, .a = a, .b = b, .c = c, .d = d };
 }
 
 fn layerOf(name: []const u8) ?usize {
@@ -174,6 +179,7 @@ pub fn expected(c: *const cfg.Config, name: []const u8, lookup_len: usize) ?Shap
         if (std.mem.eql(u8, kind_name, "lookup_per_head_norms")) return v1(head);
         if (std.mem.eql(u8, kind_name, "norm_key") or std.mem.eql(u8, kind_name, "norm_query")) return v1(c.hidden);
     }
+    if (std.mem.startsWith(u8, s, "vit.")) return visionShape(c, s);
     return null;
 }
 
@@ -188,4 +194,33 @@ test "hy4 host: shape contract covers the synthetic backbone tensors" {
     };
     for (probes) |name| try std.testing.expect(expected(&c, name, c.vocab) != null);
     try std.testing.expect(expected(&c, "vit.layers.0.self_attn.q_proj.weight", c.vocab) == null);
+}
+
+fn visionShape(c: *const cfg.Config, name: []const u8) ?Shape {
+    const h = c.vision.hidden;
+    const v = c.vision;
+    if (std.mem.eql(u8, name, "vit.embeddings.patch_embedding.weight")) return v4(h, v.channels, v.patch, v.patch);
+    if (std.mem.eql(u8, name, "vit.embeddings.patch_embedding.bias")) return v1(h);
+    if (std.mem.eql(u8, name, "vit.embeddings.position_embedding.weight")) return v2(v.positions, h);
+    if (std.mem.startsWith(u8, name, "vit.layers.")) {
+        const rest = name["vit.layers.".len..];
+        const dot = std.mem.indexOfScalar(u8, rest, '.') orelse return null;
+        _ = std.fmt.parseInt(usize, rest[0..dot], 10) catch return null;
+        const tail = rest[dot + 1 ..];
+        if (std.mem.endsWith(u8, tail, ".weight") or std.mem.endsWith(u8, tail, ".bias")) {
+            const stem = tail[0 .. tail.len - ".weight".len];
+            if (std.mem.eql(u8, stem, "input_layernorm") or std.mem.eql(u8, stem, "post_attention_layernorm")) return v1(h);
+            if (std.mem.eql(u8, stem, "self_attn.q_proj") or std.mem.eql(u8, stem, "self_attn.k_proj") or std.mem.eql(u8, stem, "self_attn.v_proj") or std.mem.eql(u8, stem, "self_attn.o_proj")) return v2(h, h);
+            if (std.mem.eql(u8, stem, "mlp.dense_h_to_4h")) return v2(v.intermediate, h);
+            if (std.mem.eql(u8, stem, "mlp.dense_4h_to_h")) return v2(h, v.intermediate);
+        }
+        return null;
+    }
+    if (std.mem.eql(u8, name, "vit.perceive.image_newline")) return v1(v.out);
+    if (std.mem.eql(u8, name, "vit.perceive.norm.weight")) return v1(h);
+    if (std.mem.eql(u8, name, "vit.perceive.proj.0.weight")) return v4(v.intermediate * v.spatial_merge * v.spatial_merge, h, v.spatial_merge, v.spatial_merge);
+    if (std.mem.eql(u8, name, "vit.perceive.proj.0.bias")) return v1(v.intermediate * v.spatial_merge * v.spatial_merge);
+    if (std.mem.eql(u8, name, "vit.perceive.proj.2.weight")) return v4(v.out, v.intermediate, 1, 1);
+    if (std.mem.eql(u8, name, "vit.perceive.proj.2.bias")) return v1(v.out);
+    return null;
 }
