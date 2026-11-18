@@ -32,15 +32,13 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("STEP inspect done\n", .{});
     const meta = adm.meta;
     var c = try config.read(a, io, dir);
-    if (layers > 0 and layers < c.layers) {
-        c.layers = @intCast(layers);
-        c.engram.count = 0;
-        c.allow_no_engram = true;
-        c.dfly.layers = 1;
-        c.dfly.targets[0] = c.layers;
-        c.dfly.target_count = 1;
-    }
-    var bag = try weights.loadPrefix(a, io, dir, &meta, layers);
+    if (layers > 0) c.layers = @intCast(@min(layers, c.layers));
+    c.engram.count = 0;
+    c.allow_no_engram = true;
+    c.dfly.layers = 1;
+    c.dfly.targets[0] = c.layers;
+    c.dfly.target_count = 1;
+    var bag = try weights.loadPrefix(a, io, dir, &meta, c.layers);
     std.debug.print("STEP load done\n", .{});
     const small_vocab: usize = @min(c.vocab, 256);
     c.vocab = @intCast(small_vocab);

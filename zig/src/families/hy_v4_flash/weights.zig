@@ -41,10 +41,10 @@ pub const Bag = struct {
     arena: std.heap.ArenaAllocator,
     io: std.Io,
     map: std.StringHashMap(Tensor),
-    files: std.ArrayList(safetensors.File),
+    files: std.ArrayList(*safetensors.File),
 
     pub fn deinit(self: *Bag) void {
-        // maps left open until process exit
+        // mapped shards stay valid for the process lifetime
         self.files.deinit(self.arena.allocator());
         self.map.deinit();
         self.arena.deinit();
@@ -110,7 +110,7 @@ fn loadInner(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const l
     while (shard_it.next()) |entry| {
         var sf: *safetensors.File = undefined;
         if (opened.get(entry.value_ptr.string)) |idx| {
-            sf = &out.files.items[idx];
+            sf = out.files.items[idx];
         } else {
             const path = try join(a, dir, entry.value_ptr.string);
             const file = safetensors.File.open(a, io, path) catch |e| {
@@ -118,9 +118,11 @@ fn loadInner(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const l
                 return e;
             };
             const idx = out.files.items.len;
-            try out.files.append(a, file);
+            const ptr = try a.create(safetensors.File);
+            ptr.* = file;
+            try out.files.append(a, ptr);
             try opened.put(entry.value_ptr.string, idx);
-            sf = &out.files.items[idx];
+            sf = ptr;
         }
         var it = wm.iterator();
         while (it.next()) |item| {
@@ -134,6 +136,8 @@ fn loadInner(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const l
                     const li = std.fmt.parseInt(usize, rest[0..dot], 10) catch 0;
                     if (li >= prefix_limit) continue;
                 }
+            }
+            if (prefix_limit > 0) {
                 if (std.mem.startsWith(u8, ckpt, "model.dfly_layers.")) continue;
                 if (std.mem.indexOf(u8, ckpt, "engram_layer.") != null) continue;
                 if (std.mem.startsWith(u8, ckpt, "vit.")) continue;
