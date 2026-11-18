@@ -33,6 +33,7 @@ pub fn main(init: std.process.Init) !void {
     const token = try std.fmt.parseInt(usize, token_s, 10);
     const layers = try std.fmt.parseInt(usize, layers_s, 10);
     const io = init.io;
+    std.debug.print("PHASE inspect\n", .{});
     const adm = try loader.inspect(a, io, dir);
     const meta = adm.meta;
     var c = try config.read(a, io, dir);
@@ -42,7 +43,9 @@ pub fn main(init: std.process.Init) !void {
     c.dfly.layers = 1;
     c.dfly.targets[0] = c.layers;
     c.dfly.target_count = 1;
+    std.debug.print("PHASE load\n", .{});
     var bag = try weights.loadPrefix(a, io, dir, &meta, c.layers);
+    std.debug.print("PHASE load_done\n", .{});
     const small_vocab: usize = @min(c.vocab, 256);
     c.vocab = @intCast(small_vocab);
     const emb = try a.alloc(f32, small_vocab * c.hidden);
@@ -54,8 +57,10 @@ pub fn main(init: std.process.Init) !void {
     defer bag.deinit();
     var count: usize = 1;
     if (it.next()) |extra| count = try std.fmt.parseInt(usize, extra, 10);
+    std.debug.print("PHASE session\n", .{});
     var s = try session.Session.init(a, &c, &bag, count + 2);
     defer s.deinit();
+    std.debug.print("PHASE step\n", .{});
     const t0 = nowNs();
     var last: u32 = 0;
     for (0..count) |i| last = try spec.pick(try s.step(token + i % c.vocab));
