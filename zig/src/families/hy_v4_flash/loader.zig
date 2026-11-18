@@ -125,7 +125,7 @@ pub fn inspect(gpa: std.mem.Allocator, io: std.Io, dir: []const u8) !Admission {
                 if (tensor.dtype != want_shape.dtype) return error.UnsupportedHy4TensorDtype;
                 if (!want_shape.is(tensor.rank, tensor.shape[0..tensor.rank])) return error.Hy4TensorShapeMismatch;
                 out.shaped += 1;
-            } else if (tensor.dtype != .bf16) return error.UnsupportedHy4TensorDtype;
+            } else if (tensor.dtype != .bf16 and !(tensor.dtype == .u32 and std.mem.endsWith(u8, item.key_ptr.*, ".weight"))) return error.UnsupportedHy4TensorDtype;
             const engine = try names.rename(a, item.key_ptr.*);
             const got = try seen.getOrPut(engine);
             if (got.found_existing) return error.DuplicateHy4Tensor;
