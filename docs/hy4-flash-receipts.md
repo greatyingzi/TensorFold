@@ -15,7 +15,7 @@
 
 1. ~~42 层完整前向 OOM~~ **已解决（提交 `12799651c`）**：非专家 BF16 张量 >100k 元素保留 mmap 字节（`Value.bf16raw`），`ops.matvecBf16` 在 matvec 内流式解码，全部 matvec 调用点经 `matvecW` 分发（含 router 的 `gate.weight`）。DGX00 全 42 层 Q4 前向通过：1272 张量、4 token、有限 logits，86.0s（约 0.046 tok/s，CPU 懒解码基线）。
 2. EXL3 未覆盖 packed 专家与 Engram；需要把这两个自定义 Module 暴露给 exllamav3 量化器。
-3. 视觉 tower / 多模态未接。
+3. 视觉 tower：已解析真实 `vision_config` 并建模全部 441 个 ViT 张量形状（含 rank-4 patch/perceive 投影），提交 `6a907c4f9`；真实视觉前向与多模态 token 拼接仍未接。
 4. 完整模型（42 层）性能基线已有 0.046 tok/s（CPU 懒解码）；decode/prefill/concurrency 的 GPU 路径 receipts 仍未收。
 
 ## 相关工具
