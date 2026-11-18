@@ -76,6 +76,7 @@ pub const Config = struct {
     topk_group: u32 = 0,
     norm_topk_prob: bool = false,
     swiglu_limit: f32 = 0,
+    mrope_section: [3]u32 = @splat(0),
     dense_layers: u32 = 0,
     context: u32 = 0,
     window: u32 = 0,
@@ -95,6 +96,11 @@ pub const Config = struct {
     dfly: Drafter = .{},
     vision: Vision = .{},
     layer: [max_layers]Layer = undefined,
+
+    pub fn ropeTheta(c: *const Config, kind: Kind) f32 {
+        for (c.layer[0..c.layers]) |l| if (l.kind == kind) return l.theta;
+        return 0;
+    }
 
     pub fn kvWidth(c: *const Config, kind: Kind) u32 {
         const heads: u32 = if (kind == .sliding) c.swa_heads else c.heads;
@@ -278,6 +284,14 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) !Config {
     const ropes = try field(t, "rope_parameters");
     if (ropes != .object) return error.BadHy4Config;
     const sparse_theta = try ropeTheta(ropes.object, .sparse);
+    const rp = ropes.object.get("sliding_attention") orelse return error.MissingHy4Rope;
+    if (rp != .object) return error.BadHy4Config;
+    const sec = try field(rp.object, "mrope_section");
+    if (sec != .array or sec.array.items.len != 3) return error.BadHy4Config;
+    for (&c.mrope_section, sec.array.items) |*dst, v| {
+        if (v != .integer or v.integer <= 0 or v.integer > std.math.maxInt(u32)) return error.BadHy4Config;
+        dst.* = @intCast(v.integer);
+    }
     const sliding_theta = try ropeTheta(ropes.object, .sliding);
     const kinds = try list(t, "layer_types", c.layers);
     const mlps = try list(t, "mlp_layer_types", c.layers);

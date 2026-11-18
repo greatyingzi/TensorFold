@@ -16,4 +16,5 @@ test "hy4 host: imports" {
     _ = @import("src/families/hy_v4_flash/ihc.zig");
     _ = @import("src/families/hy_v4_flash/indexer.zig");
     _ = @import("src/families/hy_v4_flash/engram.zig");
+    _ = @import("src/families/hy_v4_flash/rotary.zig");
 }
