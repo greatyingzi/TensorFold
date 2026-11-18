@@ -1,6 +1,8 @@
 //! Single-token host forward smoke on the synthetic checkpoint.
-//! Scope: layer 0 only, self-only attention, no compressed indexer, no Engram injection and no iHC streams.
-//! It proves tensor plumbing and shape arithmetic, not model fidelity.
+
+// Scope: layer 0, self-only attention, no indexer, no Engram and no iHC streams.
+
+// It proves tensor plumbing and shape arithmetic, not model fidelity.
 const std = @import("std");
 const config = @import("config.zig");
 const graph = @import("graph.zig");
