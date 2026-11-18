@@ -15,6 +15,12 @@ const session = @import("src/families/hy_v4_flash/session.zig");
 const loader = @import("src/families/hy_v4_flash/loader.zig");
 const spec = @import("src/families/hy_v4_flash/spec.zig");
 
+fn nowNs() i64 {
+    var ts: std.posix.timespec = undefined;
+    _ = std.posix.system.clock_gettime(.MONOTONIC, &ts);
+    return @as(i64, ts.sec) * std.time.ns_per_s + ts.nsec;
+}
+
 pub fn main(init: std.process.Init) !void {
     const a = init.arena.allocator();
     var it = std.process.Args.Iterator.init(init.minimal.args);
@@ -49,9 +55,13 @@ pub fn main(init: std.process.Init) !void {
     for (head, 0..) |*v, i| v.* = @as(f32, @floatFromInt(i % 13)) - 6.0;
     try bag.map.put("lm_head.weight", .{ .name = "lm_head.weight", .rank = 2, .shape = .{ small_vocab, c.hidden, 0 }, .value = .{ .f32s = head } });
     defer bag.deinit();
-    std.debug.print("STEP session\n", .{});
-    var s = try session.Session.init(a, &c, &bag, 2);
+    var count: usize = 1;
+    if (it.next()) |extra| count = try std.fmt.parseInt(usize, extra, 10);
+    var s = try session.Session.init(a, &c, &bag, count + 2);
     defer s.deinit();
-    const logits = try s.step(token);
-    std.debug.print("LOADED {d} tensors, LAYERS {d}, NEXT {d}\n", .{ bag.count(), c.layers, try spec.pick(logits) });
+    const t0 = nowNs();
+    var last: u32 = 0;
+    for (0..count) |i| last = try spec.pick(try s.step(token + i % c.vocab));
+    const ns: i64 = nowNs() - t0;
+    std.debug.print("LOADED {d} tensors, LAYERS {d}, TOKENS {d}, FORWARD_NS {d}, TOK_PER_S {d}, NEXT {d}\n", .{ bag.count(), c.layers, count, ns, if (ns > 0) @divTrunc(@as(i64, @intCast(count)) * @as(i64, std.time.ns_per_s), ns) else 0, last });
 }
