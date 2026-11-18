@@ -9,4 +9,6 @@ test "hy4 host: imports" {
     _ = @import("src/families/hy_v4_flash/drafter.zig");
     _ = @import("src/families/hy_v4_flash/loader.zig");
     _ = @import("src/families/hy_v4_flash/shapes.zig");
+    _ = @import("src/families/hy_v4_flash/weights.zig");
+    _ = @import("src/families/hy_v4_flash/ops.zig");
 }
