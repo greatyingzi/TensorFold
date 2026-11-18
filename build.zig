@@ -106,6 +106,7 @@ pub fn build(b: *std.Build) void {
     server_build.launchHostTests(b, test_step);
     @import("zig/build/qwen4.zig").steps(b, test_step);
     @import("zig/build/fsr.zig").steps(b, test_step);
+    @import("zig/build/hy4_host.zig").steps(b, test_step);
     @import("zig/build/kernel_symbols.zig").tests(b, test_step);
     @import("zig/build/checkpoint_security.zig").tests(b, test_step);
     @import("zig/build/quant_geometry_host.zig").steps(b, test_step);
