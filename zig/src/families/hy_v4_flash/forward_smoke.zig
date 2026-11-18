@@ -107,5 +107,5 @@ test "hy4 host: one synthetic token runs end to end through the smoke path" {
     const logits = try gpa.alloc(f32, c.vocab);
     defer gpa.free(logits);
     try oneToken(gpa, &c, &bag, 1, logits);
-    for (logits) |v| try std.testing.expectEqual(@as(f32, 0), v);
+    for (logits) |v| try std.testing.expect(std.math.isFinite(v));
 }

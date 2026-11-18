@@ -66,6 +66,14 @@ def const(shape, value):
     return np.full(n, bf16_bits(value), dtype=np.uint16)
 
 
+def varied(shape):
+    n = 1
+    for dd in shape:
+        n *= int(dd)
+    vals = ((np.arange(n, dtype=np.float32) % 13) - np.float32(6)) * np.float32(0.02)
+    return (vals.view(np.uint32) >> np.uint32(16)).astype(np.uint16)
+
+
 # ---------------------------------------------------------------------------
 DEFAULTS = dict(
     layers=4, hidden=64, heads=8, swa_heads=8, kv_heads=8,
@@ -506,6 +514,8 @@ def shape_for(name, cfg, d):
 
 def value_for(name, shape):
     """Zeros for weights, ones for norms, small constants for scales/sinks."""
+    if name.endswith("embed_tokens.weight") or name.endswith("lm_head.weight"):
+        return varied(shape)
     if name.endswith(".weight") and ("norm" in name or "layernorm" in name):
         return const(shape, 1.0)
     if name.endswith("hc_head_scale") or name.endswith("hc_scale"):

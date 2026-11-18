@@ -241,3 +241,28 @@ test "hy4 host: a token session steps through the synthetic stack" {
         for (logits) |v| try std.testing.expect(std.math.isFinite(v));
     }
 }
+
+test "hy4 host: identical token sequences give identical logits, different ones do not" {
+    const gpa = std.testing.allocator;
+    const meta = @import("loader.zig").EngramMeta{ .source_tokenizer_len = 128 };
+    var bag = try weights.load(gpa, std.testing.io, "zig/src/families/hy_v4_flash/fixtures/synthetic", &meta);
+    defer bag.deinit();
+    const c = try config.parse(gpa, @embedFile("config_synthetic_fixture.json"));
+    const seq = [_]usize{ 3, 5, 7 };
+    const other = [_]usize{ 3, 5, 9 };
+    var first = try Session.init(gpa, &c, &bag, 4);
+    defer first.deinit();
+    var second = try Session.init(gpa, &c, &bag, 4);
+    defer second.deinit();
+    var third = try Session.init(gpa, &c, &bag, 4);
+    defer third.deinit();
+    for (0..seq.len) |i| {
+        const a = try first.step(seq[i]);
+        const b = try second.step(seq[i]);
+        const d = try third.step(other[i]);
+        const a_copy = try gpa.dupe(f32, a);
+        defer gpa.free(a_copy);
+        try std.testing.expectEqualSlices(f32, a_copy, b);
+        if (i == seq.len - 1) try std.testing.expect(!std.mem.eql(f32, a_copy, d));
+    }
+}
