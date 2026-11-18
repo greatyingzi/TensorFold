@@ -208,19 +208,20 @@ fn visionShape(c: *const cfg.Config, name: []const u8) ?Shape {
         _ = std.fmt.parseInt(usize, rest[0..dot], 10) catch return null;
         const tail = rest[dot + 1 ..];
         if (std.mem.endsWith(u8, tail, ".weight") or std.mem.endsWith(u8, tail, ".bias")) {
-            const stem = tail[0 .. tail.len - ".weight".len];
+            const suffix: []const u8 = if (std.mem.endsWith(u8, tail, ".weight")) ".weight" else ".bias";
+            const stem = tail[0 .. tail.len - suffix.len];
             if (std.mem.eql(u8, stem, "input_layernorm") or std.mem.eql(u8, stem, "post_attention_layernorm")) return v1(h);
-            if (std.mem.eql(u8, stem, "self_attn.q_proj") or std.mem.eql(u8, stem, "self_attn.k_proj") or std.mem.eql(u8, stem, "self_attn.v_proj") or std.mem.eql(u8, stem, "self_attn.o_proj")) return v2(h, h);
-            if (std.mem.eql(u8, stem, "mlp.dense_h_to_4h")) return v2(v.intermediate, h);
-            if (std.mem.eql(u8, stem, "mlp.dense_4h_to_h")) return v2(h, v.intermediate);
+            if (std.mem.eql(u8, stem, "self_attn.q_proj") or std.mem.eql(u8, stem, "self_attn.k_proj") or std.mem.eql(u8, stem, "self_attn.v_proj") or std.mem.eql(u8, stem, "self_attn.o_proj")) return if (std.mem.endsWith(u8, tail, ".bias")) v1(h) else v2(h, h);
+            if (std.mem.eql(u8, stem, "mlp.dense_h_to_4h")) return if (std.mem.endsWith(u8, tail, ".bias")) v1(v.intermediate) else v2(v.intermediate, h);
+            if (std.mem.eql(u8, stem, "mlp.dense_4h_to_h")) return if (std.mem.endsWith(u8, tail, ".bias")) v1(h) else v2(h, v.intermediate);
         }
         return null;
     }
     if (std.mem.eql(u8, name, "vit.perceive.image_newline")) return v1(v.out);
     if (std.mem.eql(u8, name, "vit.perceive.norm.weight")) return v1(h);
-    if (std.mem.eql(u8, name, "vit.perceive.proj.0.weight")) return v4(v.intermediate * v.spatial_merge * v.spatial_merge, h, v.spatial_merge, v.spatial_merge);
-    if (std.mem.eql(u8, name, "vit.perceive.proj.0.bias")) return v1(v.intermediate * v.spatial_merge * v.spatial_merge);
-    if (std.mem.eql(u8, name, "vit.perceive.proj.2.weight")) return v4(v.out, v.intermediate, 1, 1);
+    if (std.mem.eql(u8, name, "vit.perceive.proj.0.weight")) return v4(h * 4, h, v.spatial_merge, v.spatial_merge);
+    if (std.mem.eql(u8, name, "vit.perceive.proj.0.bias")) return v1(h * 4);
+    if (std.mem.eql(u8, name, "vit.perceive.proj.2.weight")) return v4(v.out, h * 4, 1, 1);
     if (std.mem.eql(u8, name, "vit.perceive.proj.2.bias")) return v1(v.out);
     return null;
 }
