@@ -23,7 +23,8 @@ pub fn propose(gpa: std.mem.Allocator, logits: []const f32, count: usize) ![]u32
 }
 
 /// Verify drafts against the target: accept while each draft equals the target's greedy pick.
-/// `logits` is the target's output at the current position; the session is advanced by accepted tokens.
+
+// `logits` is the target output at the current position; the session advances by accepted tokens.
 pub fn verify(session: *session_mod.Session, logits: []const f32, drafts: []const u32) !usize {
     if (drafts.len == 0) return 0;
     var accepted: usize = 0;
