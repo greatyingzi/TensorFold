@@ -23,7 +23,7 @@ pub const prompt_rb = 64;
 
 /// A model's MLA shape against the one the kernels are built for, refused before anything is allocated or launched.
 pub fn geometry(kv_lora: usize, nope: usize, v_dim: usize, rope_dim: usize) error{MlaGeometry}!void {
-    // 128 is the Ling/GLM head; 192 and 256 are Hy4 Flash's (q_nope and v).
+// 128 is the Ling/GLM head; 192 and 256 are Hy4 Flash's (q_nope and v).
     if (kv_lora != latent_width or rope_dim != rope_width) return error.MlaGeometry;
     if (nope != 128 and nope != 192) return error.MlaGeometry;
     if (v_dim != 128 and v_dim != 256) return error.MlaGeometry;

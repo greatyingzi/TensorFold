@@ -1,7 +1,4 @@
-//! Hy4 Flash latent-MoE decode on the GPU: what the CPU reference cannot reach.
-//!
-//! One decode token touches 41 MoE layers x 16 of 512 experts x two latent projections,
-//! 4.64 G params of affine-4 weights. This measures those launches on real kernels.
+// ! Hy4 Flash latent-MoE decode on the GPU: what the CPU reference cannot reach. ! ! One decode token touches 41 MoE layers x 16 of 512 experts x two latent projections, ! 4.64 G params of affine-4 weights. This measures those launches on real kernels.
 const std = @import("std");
 const cuda = @import("cuda");
 const check = @import("check.zig");
@@ -96,8 +93,7 @@ pub fn run(gpu: Gpu) !void {
     var a4 = try qlinear.Affine4Kernels.resolve(gpu.d, mods[0], mods[1], mods[2], mods[3], sms, true);
     defer a4.deinit();
 
-    // 16 distinct experts so a token streams its weights instead of re-reading one pair from L2:
-    // gate_up (latent -> 2*inter) then down (inter -> latent) per expert, as LatentMoE runs them.
+// 16 distinct experts so a token streams its weights instead of re-reading one pair from L2: gate_up (latent -> 2*inter) then down (inter -> latent) per expert, as LatentMoE runs them.
     var stems: [top_k]Proj = undefined;
     var downs: [top_k]Proj = undefined;
     for (&stems) |*e| e.* = try make(&r, "expert gate_up", 2 * inter, latent, 16);
@@ -123,7 +119,7 @@ pub fn run(gpu: Gpu) !void {
         const token = ms / 3.0;
         std.debug.print("hy4 experts rows={d}  {d:.2} ms/token  {d:.1} tok/s  (streaming {d} experts x {d} layers)\n", .{ rows, token, 1000.0 / token, top_k, moe_layers });
     }
-    // The same 16 experts through the segmented launch: 2 launches a layer instead of 32.
+// The same 16 experts through the segmented launch: 2 launches a layer instead of 32.
     const Out = qlinear.Affine4Kernels.Out;
     var stem_outs: [top_k]Out = undefined;
     var down_outs: [top_k]Out = undefined;
@@ -150,8 +146,7 @@ pub fn run(gpu: Gpu) !void {
         const gtok = gms / 3.0;
         std.debug.print("hy4 experts grouped rows={d}  {d:.2} ms/token  {d:.1} tok/s  (8 launches a layer)\n", .{ rows, gtok, 1000.0 / gtok });
     }
-    // Hy4's MLA attention, the math around the projections: absorb 192, chunked latent
-    // attention over a 4096-key cache, merge, expand 256, output gate.
+// Hy4's MLA attention, the math around the projections: absorb 192, chunked latent attention over a 4096-key cache, merge, expand 256, output gate.
     const heads = 64;
     const lw = 512;
     const cache_rows = 4096;
@@ -196,7 +191,7 @@ pub fn run(gpu: Gpu) !void {
         const ams = try cuda.Event.elapsedMs(a0, a1);
         std.debug.print("hy4 mla math rows={d}  {d:.3} ms/layer  {d:.2} ms/token ({d} layers)  cache {d}\n", .{ rows, ams / 100.0, ams / 100.0 * 42.0, 42, cache_rows });
     }
-    // Attention and dense projections of one token, at Hy4 widths.
+// Attention and dense projections of one token, at Hy4 widths.
     const attn = [_]Proj{
         try make(&r, "q_b", 16384, 1024, 16),
         try make(&r, "kv_b", 28672, 512, 16),

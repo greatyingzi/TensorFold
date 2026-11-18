@@ -1,5 +1,4 @@
-//! The real Q4 pack through the GPU: one expert's affine-4 slice packed and read back
-//! against the CPU dequantize-and-dot, so the serving path has a numeric witness.
+// ! The real Q4 pack through the GPU: one expert's affine-4 slice packed and read back ! against the CPU dequantize-and-dot, so the serving path has a numeric witness.
 const std = @import("std");
 const cuda = @import("cuda");
 const check = @import("check.zig");
@@ -127,7 +126,7 @@ pub fn run(gpu: Gpu, dir: []const u8) !void {
     }
     const dxs = try r.dev(std.mem.sliceAsBytes(sums_host));
 
-    // decode() and cluster() write out (rows, n) bf16: two bytes an output, not four.
+// decode() and cluster() write out (rows, n) bf16: two bytes an output, not four.
     const out_bytes = n * 2;
     const dy = try r.zeros(out_bytes);
     try a4.decode(s, dx, dxs, q, dy, 1);
