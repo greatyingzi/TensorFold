@@ -44,7 +44,7 @@ pub fn main(init: std.process.Init) !void {
     c.dfly.targets[0] = c.layers;
     c.dfly.target_count = 1;
     std.debug.print("PHASE load\n", .{});
-    var bag = try weights.loadPrefix(a, io, dir, &meta, c.layers);
+    var bag = try weights.loadStreaming(a, io, dir, &meta, c.layers);
     std.debug.print("PHASE load_done\n", .{});
     const small_vocab: usize = @min(c.vocab, 256);
     c.vocab = @intCast(small_vocab);

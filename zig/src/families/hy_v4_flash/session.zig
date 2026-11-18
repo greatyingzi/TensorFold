@@ -18,7 +18,17 @@ fn f32s(bag: *const weights.Bag, name: []const u8) ![]const f32 {
     return switch (t.value) {
         .f32s => |v| v,
         .i32s, .affine4 => error.ExpectedF32Tensor,
+        .bf16raw => return error.ExpectedF32Tensor,
     };
+}
+
+fn matvecW(y: []f32, bag: *const weights.Bag, name: []const u8, x: []const f32, rows: usize, cols: usize) !void {
+    const t = bag.get(name) orelse return error.MissingHy4Tensor;
+    switch (t.value) {
+        .f32s => |v| try ops.matvec(y, v, x, rows, cols),
+        .bf16raw => |v| try ops.matvecBf16(y, v, x, rows, cols),
+        .i32s, .affine4 => return error.ExpectedF32Tensor,
+    }
 }
 
 fn named(a: std.mem.Allocator, comptime fmt: []const u8, args: anytype) ![]u8 {
@@ -143,13 +153,13 @@ pub const Session = struct {
 
             const qa = try a.alloc(f32, c.q_lora);
             const qan = try named(a, "layers.{d}.self_attn.q_a_proj.weight", .{li});
-            try ops.matvec(qa, try f32s(self.bag, qan), mixed, c.q_lora, h);
+            try matvecW(qa, self.bag, qan, mixed, c.q_lora, h);
             const qn = try a.alloc(f32, c.q_lora);
             const qnl = try named(a, "layers.{d}.self_attn.q_a_layernorm.weight", .{li});
             try ops.rmsNorm(qn, qa, try f32s(self.bag, qnl), c.eps);
             const q = try a.alloc(f32, q_out);
             const qbn = try named(a, "layers.{d}.self_attn.q_b_proj.weight", .{li});
-            try ops.matvec(q, try f32s(self.bag, qbn), qn, q_out, c.q_lora);
+            try matvecW(q, self.bag, qbn, qn, q_out, c.q_lora);
             const cos = try a.alloc(f32, rope);
             const sin = try a.alloc(f32, rope);
             try rotary.cosSin(c, plan.kind, @intCast(self.pos), cos, sin);
@@ -163,13 +173,13 @@ pub const Session = struct {
 
             const kva = try a.alloc(f32, kv_a_len);
             const kan = try named(a, "layers.{d}.self_attn.kv_a_proj_with_mqa.weight", .{li});
-            try ops.matvec(kva, try f32s(self.bag, kan), mixed, kv_a_len, h);
+            try matvecW(kva, self.bag, kan, mixed, kv_a_len, h);
             const kvn = try a.alloc(f32, c.kv_lora);
             const kvnl = try named(a, "layers.{d}.self_attn.kv_a_layernorm.weight", .{li});
             try ops.rmsNorm(kvn, kva[0..c.kv_lora], try f32s(self.bag, kvnl), c.eps);
             const kvb = try a.alloc(f32, kv_b_len);
             const kbn = try named(a, "layers.{d}.self_attn.kv_b_proj.weight", .{li});
-            try ops.matvec(kvb, try f32s(self.bag, kbn), kvn, kv_b_len, c.kv_lora);
+            try matvecW(kvb, self.bag, kbn, kvn, kv_b_len, c.kv_lora);
             const k_nope = try a.alloc(f32, heads * nope);
             const vbuf = try a.alloc(f32, heads * vdim);
             for (0..heads) |hh| {
@@ -184,7 +194,7 @@ pub const Session = struct {
                 const tkn = try named(a, "layers.{d}.self_attn.compressed_indexer.token_key_projection.weight", .{li});
                 const tknn = try named(a, "layers.{d}.self_attn.compressed_indexer.token_key_norm.weight", .{li});
                 const tk = try a.alloc(f32, c.index_dim);
-                try ops.matvec(tk, try f32s(self.bag, tkn), mixed, c.index_dim, h);
+                try matvecW(tk, self.bag, tkn, mixed, c.index_dim, h);
                 try ops.rmsNorm(tk, tk, try f32s(self.bag, tknn), c.eps);
                 try self.recall[li].addToken(self.bag, li, tk);
                 selected = try self.recall[li].select(c, self.bag, li, self.pos, qa, mixed);
@@ -193,7 +203,7 @@ pub const Session = struct {
             const ctx = try a.alloc(f32, heads * vdim);
             try self.kv[li].attend(gpa, plan.kind, c.window, selected, c.index_ratio, q_nope, q_rope, ctx);
             const on = try named(a, "layers.{d}.self_attn.o_proj.weight", .{li});
-            try ops.matvec(ffn, try f32s(self.bag, on), ctx, h, heads * vdim);
+            try matvecW(ffn, self.bag, on, ctx, h, heads * vdim);
             for (0..hc) |s| {
                 for (0..h) |i| self.next[s][i] = ag.post[s] * ffn[i] + self.streams[s][i];
             }
@@ -214,7 +224,7 @@ pub const Session = struct {
         try ihc.head(gpa, c, self.bag, self.streams[0..hc], final);
         try ops.rmsNorm(final, final, try f32s(self.bag, "norm.weight"), c.eps);
         @memcpy(self.last_hidden, final);
-        try ops.matvec(self.logits, try f32s(self.bag, "lm_head.weight"), final, c.vocab, h);
+        try matvecW(self.logits, self.bag, "lm_head.weight", final, c.vocab, h);
         self.pos += 1;
         return self.logits;
     }
@@ -230,10 +240,10 @@ pub const Session = struct {
         defer gpa.free(un);
         const dn = try named(gpa, "layers.{d}.mlp.down_proj.weight", .{layer});
         defer gpa.free(dn);
-        try ops.matvec(gate, try f32s(bag, gn), x, c.intermediate, c.hidden);
-        try ops.matvec(up, try f32s(bag, un), x, c.intermediate, c.hidden);
+        try matvecW(gate, bag, gn, x, c.intermediate, c.hidden);
+        try matvecW(up, bag, un, x, c.intermediate, c.hidden);
         for (gate, up) |*g, u| g.* = g.* * ops.sigmoid(g.*) * u;
-        try ops.matvec(out, try f32s(bag, dn), gate, c.hidden, c.intermediate);
+        try matvecW(out, bag, dn, gate, c.hidden, c.intermediate);
     }
 };
 

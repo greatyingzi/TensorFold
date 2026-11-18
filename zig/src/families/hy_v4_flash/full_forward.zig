@@ -16,7 +16,17 @@ fn f32s(bag: *const weights.Bag, name: []const u8) ![]const f32 {
     return switch (t.value) {
         .f32s => |v| v,
         .i32s, .affine4 => error.ExpectedF32Tensor,
+        .bf16raw => return error.ExpectedF32Tensor,
     };
+}
+
+fn matvecW(y: []f32, bag: *const weights.Bag, name: []const u8, x: []const f32, rows: usize, cols: usize) !void {
+    const t = bag.get(name) orelse return error.MissingHy4Tensor;
+    switch (t.value) {
+        .f32s => |v| try ops.matvec(y, v, x, rows, cols),
+        .bf16raw => |v| try ops.matvecBf16(y, v, x, rows, cols),
+        .i32s, .affine4 => return error.ExpectedF32Tensor,
+    }
 }
 
 fn named(a: std.mem.Allocator, comptime fmt: []const u8, args: anytype) ![]u8 {
@@ -34,10 +44,10 @@ fn denseFfn(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weights
     defer gpa.free(un);
     const dn = try named(gpa, "layers.{d}.mlp.down_proj.weight", .{layer});
     defer gpa.free(dn);
-    try ops.matvec(gate, try f32s(bag, gn), x, c.intermediate, c.hidden);
-    try ops.matvec(up, try f32s(bag, un), x, c.intermediate, c.hidden);
+    try matvecW(gate, bag, gn, x, c.intermediate, c.hidden);
+    try matvecW(up, bag, un, x, c.intermediate, c.hidden);
     for (gate, up) |*g, u| g.* = g.* * ops.sigmoid(g.*) * u;
-    try ops.matvec(out, try f32s(bag, dn), gate, c.hidden, c.intermediate);
+    try matvecW(out, bag, dn, gate, c.hidden, c.intermediate);
 }
 
 fn mlaSelf(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weights.Bag, layer: usize, kind: config.Kind, x: []const f32, out: []f32) !void {
@@ -53,7 +63,7 @@ fn mlaSelf(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weights.
     defer gpa.free(qa);
     const qan = try named(gpa, "layers.{d}.self_attn.q_a_proj.weight", .{layer});
     defer gpa.free(qan);
-    try ops.matvec(qa, try f32s(bag, qan), x, c.q_lora, c.hidden);
+    try matvecW(qa, bag, qan, x, c.q_lora, c.hidden);
     const qn = try gpa.alloc(f32, c.q_lora);
     defer gpa.free(qn);
     const qnl = try named(gpa, "layers.{d}.self_attn.q_a_layernorm.weight", .{layer});
@@ -63,7 +73,7 @@ fn mlaSelf(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weights.
     defer gpa.free(q);
     const qbn = try named(gpa, "layers.{d}.self_attn.q_b_proj.weight", .{layer});
     defer gpa.free(qbn);
-    try ops.matvec(q, try f32s(bag, qbn), qn, q_out, c.q_lora);
+    try matvecW(q, bag, qbn, qn, q_out, c.q_lora);
 
     const cos = try gpa.alloc(f32, rope);
     defer gpa.free(cos);
@@ -76,7 +86,7 @@ fn mlaSelf(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weights.
     defer gpa.free(kva);
     const kan = try named(gpa, "layers.{d}.self_attn.kv_a_proj_with_mqa.weight", .{layer});
     defer gpa.free(kan);
-    try ops.matvec(kva, try f32s(bag, kan), x, kv_a_len, c.hidden);
+    try matvecW(kva, bag, kan, x, kv_a_len, c.hidden);
     const kvn = try gpa.alloc(f32, c.kv_lora);
     defer gpa.free(kvn);
     const kvnl = try named(gpa, "layers.{d}.self_attn.kv_a_layernorm.weight", .{layer});
@@ -86,14 +96,14 @@ fn mlaSelf(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weights.
     defer gpa.free(kvb);
     const kbn = try named(gpa, "layers.{d}.self_attn.kv_b_proj.weight", .{layer});
     defer gpa.free(kbn);
-    try ops.matvec(kvb, try f32s(bag, kbn), kvn, kv_b_len, c.kv_lora);
+    try matvecW(kvb, bag, kbn, kvn, kv_b_len, c.kv_lora);
 
     const ctx = try gpa.alloc(f32, heads * vdim);
     defer gpa.free(ctx);
     for (0..heads) |h| @memcpy(ctx[h * vdim ..][0..vdim], kvb[h * (nope + vdim) + nope ..][0..vdim]);
     const on = try named(gpa, "layers.{d}.self_attn.o_proj.weight", .{layer});
     defer gpa.free(on);
-    try ops.matvec(out, try f32s(bag, on), ctx, c.hidden, heads * vdim);
+    try matvecW(out, bag, on, ctx, c.hidden, heads * vdim);
 }
 
 /// Run one token through every layer and return the final logits.
@@ -161,7 +171,7 @@ pub fn oneToken(gpa: std.mem.Allocator, c: *const config.Config, bag: *const wei
     defer gpa.free(final);
     try ihc.head(gpa, c, bag, streams[0..hc], final);
     try ops.rmsNorm(final, final, try f32s(bag, "norm.weight"), c.eps);
-    try ops.matvec(logits, try f32s(bag, "lm_head.weight"), final, c.vocab, h);
+    try matvecW(logits, bag, "lm_head.weight", final, c.vocab, h);
 }
 
 test "hy4 host: all synthetic layers run end to end" {

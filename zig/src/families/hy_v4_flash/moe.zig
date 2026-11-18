@@ -24,7 +24,7 @@ fn expertMatrix(dst: []f32, t: *const weights.Tensor, e: usize) !void {
                 per,
             );
         },
-        .i32s => return error.ExpectedF32Tensor,
+        .i32s, .bf16raw => return error.ExpectedF32Tensor,
     }
 }
 
@@ -33,7 +33,17 @@ fn f32s(bag: *const weights.Bag, name: []const u8) ![]const f32 {
     return switch (t.value) {
         .f32s => |v| v,
         .i32s, .affine4 => error.ExpectedF32Tensor,
+        .bf16raw => return error.ExpectedF32Tensor,
     };
+}
+
+fn matvecW(y: []f32, bag: *const weights.Bag, name: []const u8, x: []const f32, rows: usize, cols: usize) !void {
+    const t = bag.get(name) orelse return error.MissingHy4Tensor;
+    switch (t.value) {
+        .f32s => |v| try ops.matvec(y, v, x, rows, cols),
+        .bf16raw => |v| try ops.matvecBf16(y, v, x, rows, cols),
+        .i32s, .affine4 => return error.ExpectedF32Tensor,
+    }
 }
 
 pub const Route = struct {
@@ -50,13 +60,12 @@ pub fn route(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weight
     defer gpa.free(gate_name);
     const bias_name = try std.mem.concat(gpa, u8, &.{ prefix, "gate.e_score_correction_bias" });
     defer gpa.free(bias_name);
-    const gate = try f32s(bag, gate_name);
     const bias = try f32s(bag, bias_name);
-    if (gate.len != c.experts * c.hidden or bias.len != c.experts) return error.BadRouterShape;
+    if (bias.len != c.experts) return error.BadRouterShape;
 
     const logits = try gpa.alloc(f32, c.experts);
     defer gpa.free(logits);
-    try ops.matvec(logits, gate, x, c.experts, c.hidden);
+    try matvecW(logits, bag, gate_name, x, c.experts, c.hidden);
     const scores = try gpa.alloc(f32, c.experts);
     defer gpa.free(scores);
     for (logits, 0..) |v, i| scores[i] = ops.sigmoid(v);
@@ -132,7 +141,7 @@ pub fn latentMoe(gpa: std.mem.Allocator, c: *const config.Config, bag: *const we
     defer gpa.free(down_name);
     const latent_in = try gpa.alloc(f32, lat);
     defer gpa.free(latent_in);
-    try ops.matvec(latent_in, try f32s(bag, down_name), x, lat, c.hidden);
+    try matvecW(latent_in, bag, down_name, x, lat, c.hidden);
 
     const gu_name = try name(gpa, prefix, "experts.gate_up_proj");
     defer gpa.free(gu_name);
@@ -165,7 +174,7 @@ pub fn latentMoe(gpa: std.mem.Allocator, c: *const config.Config, bag: *const we
     defer gpa.free(up_name);
     const routed = try gpa.alloc(f32, c.hidden);
     defer gpa.free(routed);
-    try ops.matvec(routed, try f32s(bag, up_name), acc, c.hidden, lat);
+    try matvecW(routed, bag, up_name, acc, c.hidden, lat);
 
     const sg = try name(gpa, prefix, "shared_experts.gate_proj.weight");
     defer gpa.free(sg);
@@ -177,12 +186,12 @@ pub fn latentMoe(gpa: std.mem.Allocator, c: *const config.Config, bag: *const we
     defer gpa.free(sgv);
     const suv = try gpa.alloc(f32, lat);
     defer gpa.free(suv);
-    try ops.matvec(sgv, try f32s(bag, sg), x, lat, c.hidden);
-    try ops.matvec(suv, try f32s(bag, su), x, lat, c.hidden);
+    try matvecW(sgv, bag, sg, x, lat, c.hidden);
+    try matvecW(suv, bag, su, x, lat, c.hidden);
     swiglu(sgv, suv, c.swiglu_limit);
     const shared = try gpa.alloc(f32, c.hidden);
     defer gpa.free(shared);
-    try ops.matvec(shared, try f32s(bag, sd), sgv, c.hidden, lat);
+    try matvecW(shared, bag, sd, sgv, c.hidden, lat);
 
     for (routed, shared) |*a, v| a.* += v;
     const norm_name = try name(gpa, prefix, "combine_output_norm.weight");

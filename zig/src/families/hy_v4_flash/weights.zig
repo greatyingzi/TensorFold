@@ -21,6 +21,7 @@ pub const Affine4 = struct {
 pub const Value = union(enum) {
     f32s: []f32,
     i32s: []i32,
+    bf16raw: []const u8,
     affine4: Affine4,
 };
 
@@ -70,15 +71,20 @@ fn join(a: std.mem.Allocator, dir: []const u8, file: []const u8) ![]u8 {
 
 /// Load every modeled tensor into host memory under its engine name.
 pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const loader.EngramMeta) !Bag {
-    return loadInner(gpa, io, dir, meta, 0);
+    return loadInner(gpa, io, dir, meta, 0, false);
+}
+
+/// Keep large BF16 tensors as mapped bytes; decode them inside matvec on use.
+pub fn loadStreaming(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const loader.EngramMeta, limit: usize) !Bag {
+    return loadInner(gpa, io, dir, meta, limit, true);
 }
 
 /// Load only the first `limit` backbone layers plus global tensors, for a bounded real-checkpoint smoke.
 pub fn loadPrefix(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const loader.EngramMeta, limit: usize) !Bag {
-    return loadInner(gpa, io, dir, meta, limit);
+    return loadInner(gpa, io, dir, meta, limit, false);
 }
 
-fn loadInner(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const loader.EngramMeta, prefix_limit: usize) !Bag {
+fn loadInner(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const loader.EngramMeta, prefix_limit: usize, lazy: bool) !Bag {
     const cfg_path = try join(gpa, dir, "config.json");
     defer gpa.free(cfg_path);
     const cfg_text = try std.Io.Dir.cwd().readFileAlloc(io, cfg_path, gpa, .limited(1 << 22));
@@ -193,13 +199,17 @@ fn loadInner(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const l
             for (0..t.rank) |i| shape[i] = t.shape[i];
             switch (want.dtype) {
                 .bf16 => {
-                    const buf = try a.alloc(f32, count);
                     const bytes = std.mem.sliceAsBytes(t.bytes);
-                    for (0..count) |i| {
-                        const bits = std.mem.readInt(u16, bytes[i * 2 ..][0..2], .little);
-                        buf[i] = bf16ToF32(bits);
+                    if (lazy and count > 100_000) {
+                        try out.map.put(key, .{ .name = key, .rank = t.rank, .shape = shape, .value = .{ .bf16raw = bytes } });
+                    } else {
+                        const buf = try a.alloc(f32, count);
+                        for (0..count) |i| {
+                            const bits = std.mem.readInt(u16, bytes[i * 2 ..][0..2], .little);
+                            buf[i] = bf16ToF32(bits);
+                        }
+                        try out.map.put(key, .{ .name = key, .rank = t.rank, .shape = shape, .value = .{ .f32s = buf } });
                     }
-                    try out.map.put(key, .{ .name = key, .rank = t.rank, .shape = shape, .value = .{ .f32s = buf } });
                 },
                 .i32 => {
                     const buf = try a.alloc(i32, count);

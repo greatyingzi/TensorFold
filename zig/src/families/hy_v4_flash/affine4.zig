@@ -15,10 +15,11 @@ fn u16s(bag: *const weights.Bag, name: []const u8, count: usize) ![]const u16 {
     const raw = (switch (t.value) {
         .f32s => |v| std.mem.sliceAsBytes(v),
         .i32s => |v| std.mem.sliceAsBytes(v),
+        .bf16raw => |v| v,
         .affine4 => error.ExpectedPackedTensor,
     }) catch |e| return e;
     if (raw.len < count * 2) return error.BadAffineTensor;
-    const out = @as([*]const u16, @ptrCast(raw.ptr))[0..count];
+    const out = @as([*]const u16, @ptrCast(@alignCast(raw.ptr)))[0..count];
     return out;
 }
 
@@ -27,10 +28,11 @@ fn u32s(bag: *const weights.Bag, name: []const u8, count: usize) ![]const u32 {
     const raw = (switch (t.value) {
         .f32s => |v| std.mem.sliceAsBytes(v),
         .i32s => |v| std.mem.sliceAsBytes(v),
+        .bf16raw => |v| v,
         .affine4 => error.ExpectedPackedTensor,
     }) catch |e| return e;
     if (raw.len < count * 4) return error.BadAffineTensor;
-    const out = @as([*]const u32, @ptrCast(raw.ptr))[0..count];
+    const out = @as([*]const u32, @ptrCast(@alignCast(raw.ptr)))[0..count];
     return out;
 }
 

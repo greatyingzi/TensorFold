@@ -11,7 +11,17 @@ fn f32s(bag: *const weights.Bag, name: []const u8) ![]const f32 {
     return switch (t.value) {
         .f32s => |v| v,
         .i32s, .affine4 => error.ExpectedF32Tensor,
+        .bf16raw => return error.ExpectedF32Tensor,
     };
+}
+
+fn matvecW(y: []f32, bag: *const weights.Bag, name: []const u8, x: []const f32, rows: usize, cols: usize) !void {
+    const t = bag.get(name) orelse return error.MissingHy4Tensor;
+    switch (t.value) {
+        .f32s => |v| try ops.matvec(y, v, x, rows, cols),
+        .bf16raw => |v| try ops.matvecBf16(y, v, x, rows, cols),
+        .i32s, .affine4 => return error.ExpectedF32Tensor,
+    }
 }
 
 pub const Recall = struct {
@@ -76,7 +86,7 @@ pub const Recall = struct {
         defer self.gpa.free(hn);
         const q = try self.gpa.alloc(f32, self.heads * self.dim);
         defer self.gpa.free(q);
-        try ops.matvec(q, try f32s(bag, qn), q_resid, self.heads * self.dim, c.q_lora);
+        try matvecW(q, bag, qn, q_resid, self.heads * self.dim, c.q_lora);
         const cos = try self.gpa.alloc(f32, c.qk_rope);
         defer self.gpa.free(cos);
         const sin = try self.gpa.alloc(f32, c.qk_rope);
@@ -98,7 +108,7 @@ pub const Recall = struct {
         for (0..self.heads) |h| q_views[h] = q[h * self.dim ..][0..self.dim];
         const hw = try self.gpa.alloc(f32, self.heads);
         defer self.gpa.free(hw);
-        try ops.matvec(hw, try f32s(bag, hn), hidden, self.heads, c.hidden);
+        try matvecW(hw, bag, hn, hidden, self.heads, c.hidden);
         const norm = 1.0 / @sqrt(@as(f64, @floatFromInt(self.heads * self.dim)));
         for (hw) |*w| w.* *= @floatCast(norm);
         const scores = try self.gpa.alloc(f32, self.heads * groups);

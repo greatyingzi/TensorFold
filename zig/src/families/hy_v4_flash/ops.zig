@@ -20,6 +20,21 @@ pub fn matvec(y: []f32, w: []const f32, x: []const f32, rows: usize, cols: usize
     }
 }
 
+/// Row-major y = W x with BF16 bytes, decoded on the fly (no f32 materialization).
+pub fn matvecBf16(y: []f32, w: []const u8, x: []const f32, rows: usize, cols: usize) !void {
+    if (y.len != rows or w.len < rows * cols * 2 or x.len != cols) return error.BadMatvecShape;
+    for (0..rows) |r| {
+        var sum: f64 = 0;
+        const base = r * cols;
+        for (0..cols) |c| {
+            const bits = std.mem.readInt(u16, w[(base + c) * 2 ..][0..2], .little);
+            const v: f32 = @bitCast(@as(u32, bits) << 16);
+            sum += @as(f64, v) * @as(f64, x[c]);
+        }
+        y[r] = @floatCast(sum);
+    }
+}
+
 pub fn sigmoid(x: f32) f32 {
     return @floatCast(1.0 / (1.0 + @exp(-@as(f64, x))));
 }

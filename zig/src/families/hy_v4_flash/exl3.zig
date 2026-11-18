@@ -44,6 +44,7 @@ fn get(bag: *const weights.Bag, name: []const u8) ![]const u8 {
     return switch (t.value) {
         .f32s => |v| std.mem.sliceAsBytes(v),
         .i32s => |v| std.mem.sliceAsBytes(v),
+        .bf16raw => |v| v,
         .affine4 => error.ExpectedPackedTensor,
     };
 }
