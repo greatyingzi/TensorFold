@@ -93,27 +93,32 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const lo
             if (!std.mem.eql(u8, item.value_ptr.string, entry.value_ptr.string)) continue;
             const ckpt = item.key_ptr.*;
             const t = sf.get(ckpt) orelse return error.IndexedTensorMissing;
-            const want = shapes.expected(&c, ckpt, lookup_len) orelse continue;
+            var base = ckpt;
+            if (std.mem.endsWith(u8, ckpt, ".weight") and
+                std.mem.indexOf(u8, ckpt, "mlp.experts.") != null) {
+                base = ckpt[0 .. ckpt.len - ".weight".len];
+            }
+            const want = shapes.expected(&c, base, lookup_len) orelse continue;
             if (c.quant_method.len > 0 and std.mem.eql(u8, c.quant_method, "exl3")) {
                 try exl3.admit(&c);
-                const tr = try std.mem.concat(a, u8, &.{ ckpt, ".trellis" });
+                const tr = try std.mem.concat(a, u8, &.{ base, ".trellis" });
                 if (sf.get(tr)) |tt| {
-                    const sun = try std.mem.concat(a, u8, &.{ ckpt, ".suh" });
-                    const svn = try std.mem.concat(a, u8, &.{ ckpt, ".svh" });
+                    const sun = try std.mem.concat(a, u8, &.{ base, ".suh" });
+                    const svn = try std.mem.concat(a, u8, &.{ base, ".svh" });
                     const su = sf.get(sun) orelse return error.MissingExl3Tensor;
                     const sv = sf.get(svn) orelse return error.MissingExl3Tensor;
                     if (want.rank != 2) return error.Exl3PackedRankUnsupported;
                     const buf = try exl3.decodeRaw(a, tt.bytes, su.bytes, sv.bytes, want.a, want.b, c.quant_bits, try exl3.codebook(c.quant_codebook));
-                    const ekey = try names.rename(a, ckpt);
+                    const ekey = try names.rename(a, base);
                     try out.map.put(ekey, .{ .name = ekey, .rank = want.rank, .shape = .{ want.a, want.b, 0 }, .value = .{ .f32s = buf } });
                     continue;
                 }
             }
-            const qn = try std.mem.concat(a, u8, &.{ ckpt, ".weight" });
+            const qn = try std.mem.concat(a, u8, &.{ base, ".weight" });
             if (sf.get(qn)) |qt| {
                 if (qt.dtype == .u32) {
-                    const sn = try std.mem.concat(a, u8, &.{ ckpt, ".scales" });
-                    const bn = try std.mem.concat(a, u8, &.{ ckpt, ".biases" });
+                    const sn = try std.mem.concat(a, u8, &.{ base, ".scales" });
+                    const bn = try std.mem.concat(a, u8, &.{ base, ".biases" });
                     const st = sf.get(sn) orelse return error.MissingAffineTensor;
                     const bt = sf.get(bn) orelse return error.MissingAffineTensor;
                     if (st.dtype != .bf16 or bt.dtype != .bf16) return error.UnsupportedHy4TensorDtype;
@@ -121,13 +126,13 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const lo
                     if (want.rank > 1) vals *= want.b;
                     if (want.rank > 2) vals *= want.c;
                     const buf = try affine4.dequantRaw(a, qt.bytes, st.bytes, bt.bytes, vals);
-                    const qkey = try names.rename(a, ckpt);
+                    const qkey = try names.rename(a, base);
                     try out.map.put(qkey, .{ .name = qkey, .rank = want.rank, .shape = .{ want.a, want.b, want.c }, .value = .{ .f32s = buf } });
                     continue;
                 }
             }
             if (t.dtype != want.dtype or !want.is(t.rank, t.shape[0..t.rank])) return error.Hy4TensorShapeMismatch;
-            const key = try names.rename(a, ckpt);
+            const key = try names.rename(a, base);
             const count = t.numel();
             var shape: [3]usize = .{ 0, 0, 0 };
             for (0..t.rank) |i| shape[i] = t.shape[i];

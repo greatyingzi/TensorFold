@@ -175,3 +175,23 @@ test "hy4 host: all synthetic layers run end to end" {
     try oneToken(gpa, &c, &bag, 1, logits);
     for (logits) |v| try std.testing.expect(std.math.isFinite(v));
 }
+
+
+test "hy4 host: affine4 quantized experts run the same forward as bf16" {
+    const gpa = std.testing.allocator;
+    const meta = @import("loader.zig").EngramMeta{ .source_tokenizer_len = 128 };
+    var bf = try weights.load(gpa, std.testing.io, "zig/src/families/hy_v4_flash/fixtures/synthetic-bf16", &meta);
+    defer bf.deinit();
+    var q4 = try weights.load(gpa, std.testing.io, "zig/src/families/hy_v4_flash/fixtures/synthetic-q4", &meta);
+    defer q4.deinit();
+    const c = try config.parse(gpa, @embedFile("config_synthetic_q4_fixture.json"));
+    var a = try @import("session.zig").Session.init(gpa, &c, &bf, 4);
+    defer a.deinit();
+    var b = try @import("session.zig").Session.init(gpa, &c, &q4, 4);
+    defer b.deinit();
+    const la = try a.step(1);
+    const lb = try b.step(1);
+    for (la) |v| try std.testing.expect(std.math.isFinite(v));
+    for (lb) |v| try std.testing.expect(std.math.isFinite(v));
+    try std.testing.expectEqual(try @import("spec.zig").pick(la), try @import("spec.zig").pick(lb));
+}
