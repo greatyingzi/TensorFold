@@ -33,9 +33,7 @@ pub fn main(init: std.process.Init) !void {
     const token = try std.fmt.parseInt(usize, token_s, 10);
     const layers = try std.fmt.parseInt(usize, layers_s, 10);
     const io = init.io;
-    std.debug.print("STEP inspect\n", .{});
     const adm = try loader.inspect(a, io, dir);
-    std.debug.print("STEP inspect done\n", .{});
     const meta = adm.meta;
     var c = try config.read(a, io, dir);
     if (layers > 0) c.layers = @intCast(@min(layers, c.layers));
@@ -45,7 +43,6 @@ pub fn main(init: std.process.Init) !void {
     c.dfly.targets[0] = c.layers;
     c.dfly.target_count = 1;
     var bag = try weights.loadPrefix(a, io, dir, &meta, c.layers);
-    std.debug.print("STEP load done\n", .{});
     const small_vocab: usize = @min(c.vocab, 256);
     c.vocab = @intCast(small_vocab);
     const emb = try a.alloc(f32, small_vocab * c.hidden);
