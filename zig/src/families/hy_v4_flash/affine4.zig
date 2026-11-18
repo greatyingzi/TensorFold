@@ -5,9 +5,9 @@ const weights = @import("weights.zig");
 
 pub const group = 64;
 pub const suffixes = struct {
-    pub const codes = ".qcodes";
-    pub const scales = ".qscales";
-    pub const biases = ".qbiases";
+    pub const codes = ".weight";
+    pub const scales = ".scales";
+    pub const biases = ".biases";
 };
 
 fn u16s(bag: *const weights.Bag, name: []const u8, count: usize) ![]const u16 {
@@ -74,9 +74,9 @@ test "hy4 host: affine4 reader dequantizes a flat tensor using core layout" {
             _ = dtype;
         }
     };
-    try mk.f(a, &bag, "w.qcodes", std.mem.sliceAsBytes(&words), 4);
-    try mk.f(a, &bag, "w.qscales", std.mem.sliceAsBytes(&scales), 2);
-    try mk.f(a, &bag, "w.qbiases", std.mem.sliceAsBytes(&biases), 2);
+    try mk.f(a, &bag, "w.weight", std.mem.sliceAsBytes(&words), 4);
+    try mk.f(a, &bag, "w.scales", std.mem.sliceAsBytes(&scales), 2);
+    try mk.f(a, &bag, "w.biases", std.mem.sliceAsBytes(&biases), 2);
     const back = try materialize(gpa, &bag, "w", values);
     defer gpa.free(back);
     const step: f32 = 63.0 / 15.0;
