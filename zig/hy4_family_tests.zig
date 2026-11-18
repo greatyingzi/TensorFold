@@ -3,4 +3,6 @@ test "hy4 host: imports" {
     _ = @import("src/families/hy_v4_flash/config.zig");
     _ = @import("src/families/hy_v4_flash/tensor_names.zig");
     _ = @import("src/families/hy_v4_flash/index_test.zig");
+    _ = @import("src/families/hy_v4_flash/graph.zig");
+    _ = @import("src/families/hy_v4_flash/capability.zig");
 }

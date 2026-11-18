@@ -100,10 +100,7 @@ pub const Config = struct {
 };
 
 fn field(o: std.json.ObjectMap, key: []const u8) !std.json.Value {
-    return o.get(key) orelse {
-        std.log.err("hy_v4_flash: config.json lacks {s}", .{key});
-        return error.BadHy4Config;
-    };
+    return o.get(key) orelse error.BadHy4Config;
 }
 
 fn number(v: std.json.Value) !f64 {
