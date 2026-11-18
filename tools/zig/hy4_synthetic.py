@@ -32,6 +32,10 @@ def generate(a):
         if name.endswith("engram_layer.lookup_table"):
             arr = np.arange(shape[0], dtype=np.int32)
             dtype = "I32"
+        elif ".hc_" in name or "hc_head" in name:
+            bits = value_for(name, shape)
+            arr = (bits.astype(np.uint32) << 16).view(np.float32)
+            dtype = "F32"
         else:
             arr = value_for(name, shape)
             dtype = "BF16"
@@ -260,7 +264,7 @@ def verify(directory):
             raise SystemExit("duplicate tensor across shards: %s" % name)
         seen.add(name)
         meta = hdr[name]
-        want_dtype = "I32" if name.endswith("engram_layer.lookup_table") else "BF16"
+        want_dtype = "I32" if name.endswith("engram_layer.lookup_table") else ("F32" if (".hc_" in name or "hc_head" in name) else "BF16")
         if meta.get("dtype") != want_dtype:
             raise SystemExit("%s: dtype %s is not %s" % (name, meta.get("dtype"), want_dtype))
         shape = tuple(meta.get("shape", []))

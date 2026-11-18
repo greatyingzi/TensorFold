@@ -24,6 +24,12 @@ fn v1(a: usize) Shape {
 fn i32v1(a: usize) Shape {
     return .{ .rank = 1, .a = a, .dtype = .i32 };
 }
+fn f32v1(a: usize) Shape {
+    return .{ .rank = 1, .a = a, .dtype = .f32 };
+}
+fn f32v2(a: usize, b: usize) Shape {
+    return .{ .rank = 2, .a = a, .b = b, .dtype = .f32 };
+}
 fn v2(a: usize, b: usize) Shape {
     return .{ .rank = 2, .a = a, .b = b };
 }
@@ -60,17 +66,17 @@ fn primes(c: *const cfg.Config, layer: usize) usize {
 pub fn expected(c: *const cfg.Config, name: []const u8, lookup_len: usize) ?Shape {
     if (std.mem.eql(u8, name, "model.embed_tokens.weight") or std.mem.eql(u8, name, "lm_head.weight")) return v2(c.vocab, c.hidden);
     if (std.mem.eql(u8, name, "model.norm.weight")) return v1(c.hidden);
-    if (std.mem.startsWith(u8, name, "model.hc_head.hc_head_fn")) return v2(c.hc_mult * (c.hc_mult - 1), c.hc_mult * c.hidden);
-    if (std.mem.startsWith(u8, name, "model.hc_head.hc_head_base")) return v1(c.hc_mult * (c.hc_mult - 1));
-    if (std.mem.startsWith(u8, name, "model.hc_head.hc_head_scale")) return v1(c.hc_mult - 1);
+    if (std.mem.startsWith(u8, name, "model.hc_head.hc_head_fn")) return f32v2(c.hc_mult, c.hc_mult * c.hidden);
+    if (std.mem.startsWith(u8, name, "model.hc_head.hc_head_base")) return f32v1(c.hc_mult);
+    if (std.mem.startsWith(u8, name, "model.hc_head.hc_head_scale")) return f32v1(1);
 
     const layer = layerOf(name) orelse return null;
     if (layer >= c.layers) return null;
     const s = tailOf(name, layer);
     const hc = c.hc_mult;
-    if (std.mem.startsWith(u8, s, "hc_attn_layer.hc_pre.hc_fn") or std.mem.startsWith(u8, s, "hc_mlp_layer.hc_pre.hc_fn")) return v2(hc * (hc - 1), hc * c.hidden);
-    if (std.mem.startsWith(u8, s, "hc_attn_layer.hc_pre.hc_base") or std.mem.startsWith(u8, s, "hc_mlp_layer.hc_pre.hc_base")) return v1(hc * (hc - 1));
-    if (std.mem.startsWith(u8, s, "hc_attn_layer.hc_pre.hc_scale") or std.mem.startsWith(u8, s, "hc_mlp_layer.hc_pre.hc_scale")) return v1(hc - 1);
+    if (std.mem.startsWith(u8, s, "hc_attn_layer.hc_pre.hc_fn") or std.mem.startsWith(u8, s, "hc_mlp_layer.hc_pre.hc_fn")) return f32v2(2 * hc, hc * c.hidden);
+    if (std.mem.startsWith(u8, s, "hc_attn_layer.hc_pre.hc_base") or std.mem.startsWith(u8, s, "hc_mlp_layer.hc_pre.hc_base")) return f32v1(2 * hc);
+    if (std.mem.startsWith(u8, s, "hc_attn_layer.hc_pre.hc_scale") or std.mem.startsWith(u8, s, "hc_mlp_layer.hc_pre.hc_scale")) return f32v1(2);
     if (std.mem.eql(u8, s, "input_layernorm.weight") or std.mem.eql(u8, s, "post_attention_layernorm.weight")) return v1(c.hidden);
 
     const kind = c.layer[layer].kind;

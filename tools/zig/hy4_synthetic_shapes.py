@@ -290,12 +290,12 @@ def dims(cfg):
 
 
 _HC_SHAPES = {
-    "hc_attn_layer.hc_pre.hc_fn": lambda d: (d["HC"] * (d["HC"] - 1), d["HC"] * d["H"]),
-    "hc_attn_layer.hc_pre.hc_base": lambda d: (d["HC"] * (d["HC"] - 1),),
-    "hc_attn_layer.hc_pre.hc_scale": lambda d: (d["HC"] - 1,),
-    "hc_mlp_layer.hc_pre.hc_fn": lambda d: (d["HC"] * (d["HC"] - 1), d["HC"] * d["H"]),
-    "hc_mlp_layer.hc_pre.hc_base": lambda d: (d["HC"] * (d["HC"] - 1),),
-    "hc_mlp_layer.hc_pre.hc_scale": lambda d: (d["HC"] - 1,),
+    "hc_attn_layer.hc_pre.hc_fn": lambda d: (2 * d["HC"], d["HC"] * d["H"]),
+    "hc_attn_layer.hc_pre.hc_base": lambda d: (2 * d["HC"],),
+    "hc_attn_layer.hc_pre.hc_scale": lambda d: (2,),
+    "hc_mlp_layer.hc_pre.hc_fn": lambda d: (2 * d["HC"], d["HC"] * d["H"]),
+    "hc_mlp_layer.hc_pre.hc_base": lambda d: (2 * d["HC"],),
+    "hc_mlp_layer.hc_pre.hc_scale": lambda d: (2,),
 }
 
 _INDEXER_SHAPES = {
@@ -360,11 +360,11 @@ def shape_for(name, cfg, d):
     if name == "model.norm.weight":
         return (H,)
     if name.startswith("model.hc_head.hc_head_fn"):
-        return (d["HC"] * (d["HC"] - 1), d["HC"] * H)
+        return (d["HC"], d["HC"] * H)
     if name.startswith("model.hc_head.hc_head_base"):
-        return (d["HC"] * (d["HC"] - 1),)
+        return (d["HC"],)
     if name.startswith("model.hc_head.hc_head_scale"):
-        return (d["HC"] - 1,)
+        return (1,)
 
     m = re.match(r"model[.]layers[.]([0-9]+)[.](.*)$", name)
     if m:

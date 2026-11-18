@@ -13,4 +13,5 @@ test "hy4 host: imports" {
     _ = @import("src/families/hy_v4_flash/ops.zig");
     _ = @import("src/families/hy_v4_flash/forward_smoke.zig");
     _ = @import("src/families/hy_v4_flash/moe.zig");
+    _ = @import("src/families/hy_v4_flash/ihc.zig");
 }

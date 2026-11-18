@@ -112,6 +112,11 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const lo
                     for (0..count) |i| buf[i] = @bitCast(std.mem.readInt(u32, t.bytes[i * 4 ..][0..4], .little));
                     try out.map.put(key, .{ .name = key, .rank = t.rank, .shape = shape, .value = .{ .i32s = buf } });
                 },
+                .f32 => {
+                    const buf = try a.alloc(f32, count);
+                    for (0..count) |i| buf[i] = @bitCast(std.mem.readInt(u32, t.bytes[i * 4 ..][0..4], .little));
+                    try out.map.put(key, .{ .name = key, .rank = t.rank, .shape = shape, .value = .{ .f32s = buf } });
+                },
                 else => return error.UnsupportedHy4TensorDtype,
             }
         }
