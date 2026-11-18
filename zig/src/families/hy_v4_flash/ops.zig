@@ -20,19 +20,64 @@ pub fn matvec(y: []f32, w: []const f32, x: []const f32, rows: usize, cols: usize
     }
 }
 
-/// Row-major y = W x with BF16 bytes, decoded on the fly (no f32 materialization).
+/// BF16 is the top half of an f32: bits << 16 widens a whole vector at once.
+const lanes = 8;
+const F8 = @Vector(lanes, f32);
+const U16x8 = @Vector(lanes, u16);
+const U32x8 = @Vector(lanes, u32);
+
+/// One row of W (BF16) dotted with x, vectorized and f32-accumulated.
+inline fn rowDot(w_row: []const u8, x: []const f32, cols: usize) f32 {
+    var acc: F8 = @splat(0);
+    var c: usize = 0;
+    while (c + lanes <= cols) : (c += lanes) {
+        const raw: U16x8 = @bitCast(w_row[c * 2 ..][0 .. lanes * 2].*);
+        const wide: U32x8 = @intCast(raw);
+        const v: F8 = @bitCast(wide << @splat(16));
+        const xv: F8 = x[c..][0..lanes].*;
+        acc += v * xv;
+    }
+    var sum: f32 = @reduce(.Add, acc);
+    while (c < cols) : (c += 1) {
+        const bits = std.mem.readInt(u16, w_row[c * 2 ..][0..2], .little);
+        sum += @as(f32, @bitCast(@as(u32, bits) << 16)) * x[c];
+    }
+    return sum;
+}
+
+fn rowsWorker(y: []f32, w: []const u8, x: []const f32, cols: usize, lo: usize, hi: usize) void {
+    for (lo..hi) |r| y[r] = rowDot(w[r * cols * 2 ..], x, cols);
+}
+
+/// Threads a wide matvec splits its rows over; small ones stay inline.
+fn workersFor(rows: usize, cols: usize) usize {
+    const work = rows * cols;
+    if (work < (1 << 21)) return 1;
+    const cores = std.Thread.getCpuCount() catch 1;
+    const by_work = work / (1 << 20);
+    return @max(1, @min(cores, @min(by_work, rows)));
+}
+
+/// Row-major y = W x with BF16 bytes, decoded on the fly (no f32 materialization),
+/// vectorized and spread over the host cores for wide matrices.
 pub fn matvecBf16(y: []f32, w: []const u8, x: []const f32, rows: usize, cols: usize) !void {
     if (y.len != rows or w.len < rows * cols * 2 or x.len != cols) return error.BadMatvecShape;
-    for (0..rows) |r| {
-        var sum: f64 = 0;
-        const base = r * cols;
-        for (0..cols) |c| {
-            const bits = std.mem.readInt(u16, w[(base + c) * 2 ..][0..2], .little);
-            const v: f32 = @bitCast(@as(u32, bits) << 16);
-            sum += @as(f64, v) * @as(f64, x[c]);
-        }
-        y[r] = @floatCast(sum);
+    const n = workersFor(rows, cols);
+    if (n <= 1) {
+        rowsWorker(y, w, x, cols, 0, rows);
+        return;
     }
+    var threads: [64]std.Thread = undefined;
+    var started: usize = 0;
+    const chunk = (rows + n - 1) / n;
+    var lo: usize = 0;
+    while (lo < rows and started < threads.len) : (lo += chunk) {
+        const hi = @min(rows, lo + chunk);
+        threads[started] = std.Thread.spawn(.{}, rowsWorker, .{ y, w, x, cols, lo, hi }) catch break;
+        started += 1;
+    }
+    rowsWorker(y, w, x, cols, lo, rows);
+    for (threads[0..started]) |t| t.join();
 }
 
 pub fn sigmoid(x: f32) f32 {

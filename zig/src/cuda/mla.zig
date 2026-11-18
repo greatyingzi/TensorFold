@@ -23,7 +23,10 @@ pub const prompt_rb = 64;
 
 /// A model's MLA shape against the one the kernels are built for, refused before anything is allocated or launched.
 pub fn geometry(kv_lora: usize, nope: usize, v_dim: usize, rope_dim: usize) error{MlaGeometry}!void {
-    if (kv_lora != latent_width or nope != head_width or v_dim != head_width or rope_dim != rope_width) return error.MlaGeometry;
+    // 128 is the Ling/GLM head; 192 and 256 are Hy4 Flash's (q_nope and v).
+    if (kv_lora != latent_width or rope_dim != rope_width) return error.MlaGeometry;
+    if (nope != 128 and nope != 192) return error.MlaGeometry;
+    if (v_dim != 128 and v_dim != 256) return error.MlaGeometry;
 }
 
 /// Online-softmax partials a chunk writes: o [nch][rows][heads][512] fp32, m and l [nch][rows][heads] fp32.
@@ -63,6 +66,8 @@ pub const Mla = struct {
     merge_part_fn: Function,
     absorb_q_fn: Function,
     expand_v_fn: Function,
+    absorb_q_wide_fn: ?Function,
+    expand_v_wide_fn: ?Function,
     rope_fn: Function,
     gate_fn: Function,
 
@@ -77,6 +82,8 @@ pub const Mla = struct {
             .merge_part_fn = try mod.function("tf_mla_merge_part"),
             .absorb_q_fn = try mod.function("tf_mla_absorb_q_128"),
             .expand_v_fn = try mod.function("tf_mla_expand_v_128"),
+            .absorb_q_wide_fn = mod.function("tf_mla_absorb_q_192") catch null,
+            .expand_v_wide_fn = mod.function("tf_mla_expand_v_256") catch null,
             .rope_fn = try mod.function("tf_mla_rope"),
             .gate_fn = try mod.function("tf_mla_gate"),
         };
@@ -97,18 +104,31 @@ pub const Mla = struct {
         try launch_.launch(f, .{ .grid = .{ .x = @intCast(heads), .y = @intCast(cols), .z = cdiv(rows, rb) }, .block = .{ .x = 128 } }, s, &a);
     }
 
-    /// The absorb: q_nope the first d = 128 of each head's `q_stride` columns, out rows `out_stride` apart per head.
+    /// The absorb: q_nope the first d of each head's `q_stride` columns, out rows `out_stride` apart per head.
+    /// d = 128 is the Ling/GLM head; 192 is Hy4 Flash's.
     pub fn absorbQ(m: *const Mla, s: Stream, q: u64, q_stride: usize, wk: u64, out: u64, out_stride: usize, rows: usize, heads: usize, d: usize, lw: usize) !void {
-        if (d != head_width or lw != latent_width or q_stride < d or out_stride < lw) return error.LatentShape;
+        if (lw != latent_width or q_stride < d or out_stride < lw) return error.LatentShape;
         if (rows == 0) return;
-        try rowBlocks(m.absorb_q_fn, s, q, wk, out, rows, heads, lw / 32, .{ i64of(q_stride), i64of(out_stride) });
+        if (d == head_width) {
+            try rowBlocks(m.absorb_q_fn, s, q, wk, out, rows, heads, lw / 32, .{ i64of(q_stride), i64of(out_stride) });
+            return;
+        }
+        const f = m.absorb_q_wide_fn orelse return error.LatentShape;
+        if (d != 192) return error.LatentShape;
+        try rowBlocks(f, s, q, wk, out, rows, heads, lw / 32, .{ i64of(q_stride), i64of(out_stride) });
     }
 
-    /// out [rows][heads][dv] bf16 = o_lat [rows][heads][lw] . wv [heads][dv][lw], 128-wide v heads.
+    /// out [rows][heads][dv] bf16 = o_lat [rows][heads][lw] . wv [heads][dv][lw]: 128-wide v heads, or Hy4's 256.
     pub fn expandV(m: *const Mla, s: Stream, ol: u64, wv: u64, out: u64, rows: usize, heads: usize, dv: usize, lw: usize) !void {
-        if (lw != latent_width or dv != head_width) return error.LatentShape;
+        if (lw != latent_width) return error.LatentShape;
         if (rows == 0) return;
-        try rowBlocks(m.expand_v_fn, s, ol, wv, out, rows, heads, dv / 16, .{});
+        if (dv == head_width) {
+            try rowBlocks(m.expand_v_fn, s, ol, wv, out, rows, heads, dv / 16, .{});
+            return;
+        }
+        const f = m.expand_v_wide_fn orelse return error.LatentShape;
+        if (dv != 256) return error.LatentShape;
+        try rowBlocks(f, s, ol, wv, out, rows, heads, dv / 16, .{});
     }
 
     /// The GPT-J rope at device i32 pos + r, fp32 inv_freq [32], cos and sin times `scale` (YaRN's; 1: plain).

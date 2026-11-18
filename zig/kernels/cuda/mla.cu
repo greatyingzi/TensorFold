@@ -52,3 +52,17 @@ extern "C" __global__ void __launch_bounds__(32)
 extern "C" __global__ void tf_mla_gate(__nv_bfloat16* o, int64_t heads, const __nv_bfloat16* g, int64_t gs) {
   tf_mla::gate(o, heads, g, gs);
 }
+
+// Hy4 Flash: the same bodies over its wider heads, q_nope 192 and v 256 (latent 512, 64 roped columns as above).
+extern "C" __global__ void __launch_bounds__(128)
+    tf_mla_absorb_q_192(const __nv_bfloat16* q, const __nv_bfloat16* wk, __nv_bfloat16* qa, int64_t rows,
+                        int64_t heads, int64_t rb, int64_t qs, int64_t qaw) {
+  tf_mla::absorb_q<192>(q, wk, qa, rows, heads, rb, qs, qaw);
+}
+
+// The latent output expanded into 256-wide v heads.
+extern "C" __global__ void __launch_bounds__(128)
+    tf_mla_expand_v_256(const __nv_bfloat16* ol, const __nv_bfloat16* wv, __nv_bfloat16* out, int64_t rows,
+                        int64_t heads, int64_t rb) {
+  tf_mla::expand_v<256>(ol, wv, out, rows, heads, rb);
+}
