@@ -123,7 +123,10 @@ pub fn inspect(gpa: std.mem.Allocator, io: std.Io, dir: []const u8) !Admission {
             const lookup_len: usize = if (out.meta.source_tokenizer_len > 0) out.meta.source_tokenizer_len else c.vocab;
             if (shapes.expected(&c, item.key_ptr.*, lookup_len)) |want_shape| {
                 if (tensor.dtype != want_shape.dtype) return error.UnsupportedHy4TensorDtype;
-                if (!want_shape.is(tensor.rank, tensor.shape[0..tensor.rank])) return error.Hy4TensorShapeMismatch;
+                if (!want_shape.is(tensor.rank, tensor.shape[0..tensor.rank]) and
+                    !(std.mem.endsWith(u8, item.key_ptr.*, "engram_layer.lookup_table") and tensor.dtype == .i32 and tensor.rank == 1)) {
+                    return error.Hy4TensorShapeMismatch;
+                }
                 out.shaped += 1;
             } else if (tensor.dtype != .bf16 and !(tensor.dtype == .u32 and std.mem.endsWith(u8, item.key_ptr.*, ".weight"))) return error.UnsupportedHy4TensorDtype;
             const engine = try names.rename(a, item.key_ptr.*);
