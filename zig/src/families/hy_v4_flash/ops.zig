@@ -33,6 +33,17 @@ const SortCtx = struct {
     }
 };
 
+/// Index of the largest value, lowest index wins ties; NaN is refused.
+pub fn argmax(values: []const f32) !usize {
+    if (values.len == 0) return error.EmptyArgmax;
+    var best: usize = 0;
+    for (values, 0..) |v, i| {
+        if (std.math.isNan(v)) return error.NanInArgmax;
+        if (v > values[best]) best = i;
+    }
+    return best;
+}
+
 /// Indices of the largest `k` values, descending by value then index; NaN is refused.
 pub fn topk(dst: []usize, values: []const f32, k: usize) !void {
     if (dst.len < k or k > values.len or values.len > 1024) return error.BadTopkShape;
