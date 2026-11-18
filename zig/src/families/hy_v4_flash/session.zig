@@ -11,6 +11,7 @@ const moe = @import("moe.zig");
 const rotary = @import("rotary.zig");
 const graph = @import("graph.zig");
 const attention = @import("attention.zig");
+const recall_mod = @import("recall.zig");
 
 fn f32s(bag: *const weights.Bag, name: []const u8) ![]const f32 {
     const t = bag.get(name) orelse return error.MissingHy4Tensor;
@@ -30,6 +31,8 @@ pub const Session = struct {
     bag: *const weights.Bag,
     kv: [64]attention.LayerKv = undefined,
     ready: [64]bool = @splat(false),
+    recall: [64]recall_mod.Recall = undefined,
+    recall_ready: [64]bool = @splat(false),
     streams: [16][]f32 = undefined,
     next: [16][]f32 = undefined,
     logits: []f32,
@@ -53,6 +56,10 @@ pub const Session = struct {
             const vdim = if (plan.kind == .sliding) c.swa_v_dim else c.v_dim;
             self.kv[i] = try attention.LayerKv.init(gpa, c.layer[i].heads, nope, rope, vdim, cap);
             self.ready[i] = true;
+            if (plan.kind == .sparse) {
+                self.recall[i] = try recall_mod.Recall.init(gpa, c, cap);
+                self.recall_ready[i] = true;
+            }
             ok_layers += 1;
         }
         const embed = try f32s(bag, "embed_tokens.weight");
@@ -66,7 +73,10 @@ pub const Session = struct {
     }
 
     pub fn deinit(self: *Session) void {
-        for (0..self.c.layers) |i| if (self.ready[i]) self.kv[i].deinit(self.gpa);
+        for (0..self.c.layers) |i| {
+            if (self.ready[i]) self.kv[i].deinit(self.gpa);
+            if (self.recall_ready[i]) self.recall[i].deinit();
+        }
         for (0..self.c.hc_mult) |s| {
             self.gpa.free(self.streams[s]);
             self.gpa.free(self.next[s]);
@@ -160,8 +170,19 @@ pub const Session = struct {
             const k_rope = try a.alloc(f32, heads * rope);
             try self.expandRope(kva[c.kv_lora..], heads, rope, k_rope);
             try self.kv[li].append(k_nope, k_rope, vbuf);
+            var selected: ?[]usize = null;
+            if (plan.kind == .sparse) {
+                const tkn = try named(a, "layers.{d}.self_attn.compressed_indexer.token_key_projection.weight", .{li});
+                const tknn = try named(a, "layers.{d}.self_attn.compressed_indexer.token_key_norm.weight", .{li});
+                const tk = try a.alloc(f32, c.index_dim);
+                try ops.matvec(tk, try f32s(self.bag, tkn), mixed, c.index_dim, h);
+                try ops.rmsNorm(tk, tk, try f32s(self.bag, tknn), c.eps);
+                try self.recall[li].addToken(self.bag, li, tk);
+                selected = try self.recall[li].select(c, self.bag, li, self.pos, qa, mixed);
+                defer if (selected) |s| self.recall[li].deinitResult(s);
+            }
             const ctx = try a.alloc(f32, heads * vdim);
-            try self.kv[li].attend(gpa, plan.kind, c.window, null, c.index_ratio, q_nope, q_rope, ctx);
+            try self.kv[li].attend(gpa, plan.kind, c.window, selected, c.index_ratio, q_nope, q_rope, ctx);
             const on = try named(a, "layers.{d}.self_attn.o_proj.weight", .{li});
             try ops.matvec(ffn, try f32s(self.bag, on), ctx, h, heads * vdim);
             for (0..hc) |s| {
