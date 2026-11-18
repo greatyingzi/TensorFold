@@ -356,3 +356,17 @@ test "hy4 host: a truncated Engram prime table is refused" {
     defer std.testing.allocator.free(bytes);
     try std.testing.expectError(error.BadHy4Config, parse(std.testing.allocator, bytes));
 }
+
+
+test "hy4 host: the scaled synthetic config parses with the same schema" {
+    const c = try parse(std.testing.allocator, @embedFile("config_synthetic_fixture.json"));
+    try std.testing.expectEqual(@as(u32, 4), c.layers);
+    try std.testing.expectEqual(@as(u32, 64), c.hidden);
+    try std.testing.expectEqual(@as(u32, 128), c.vocab);
+    try std.testing.expectEqual(@as(u32, 4), c.experts);
+    try std.testing.expectEqual(@as(u32, 2), c.topk);
+    try std.testing.expectEqual(@as(usize, 1), c.engram.count);
+    try std.testing.expectEqual(@as(u32, 2), c.engram.layers[0].id);
+    try std.testing.expectEqual(@as(u32, 1), c.dfly.layers);
+    try std.testing.expectEqual(@as(u32, 2), c.dfly.drafts);
+}

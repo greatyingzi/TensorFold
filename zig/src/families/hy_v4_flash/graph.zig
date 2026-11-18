@@ -109,3 +109,10 @@ test "hy4 host: MLA dimensions are per attention kind" {
     try std.testing.expectEqual(@as(usize, 576), sparse.values());
     try std.testing.expectError(error.LayerOutOfBounds, layerPlan(&c, c.layers));
 }
+
+
+test "hy4 host: the synthetic layer graph matches the generated fixture" {
+    const c = try @import("config.zig").parse(std.testing.allocator, @embedFile("config_synthetic_fixture.json"));
+    try validate(&c);
+    try std.testing.expectEqual(@as(usize, 171), try expectedBackboneTensors(&c));
+}
