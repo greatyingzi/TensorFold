@@ -7,4 +7,5 @@ test "hy4 host: imports" {
     _ = @import("src/families/hy_v4_flash/capability.zig");
     _ = @import("src/families/hy_v4_flash/engram_rng.zig");
     _ = @import("src/families/hy_v4_flash/drafter.zig");
+    _ = @import("src/families/hy_v4_flash/loader.zig");
 }

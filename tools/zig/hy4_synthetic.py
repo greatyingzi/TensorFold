@@ -46,9 +46,15 @@ def generate(a):
         si = i % a.shards
         shards[si][name] = tensors[name]
         wmap[name] = shard_name(si, a.shards)
+    emeta = {"source_tokenizer_len": cfg["text_config"]["vocab_size"],
+             "compressed_vocab_size": cfg["text_config"]["engram_vocab_size"][0],
+             "engram_seed": cfg["text_config"].get("engram_seed", 0),
+             "normalizer_signature": "nfkc-nfd-stripaccents-lower-ws-strip-addedbypass-v2",
+             "lookup_sha256": "00" * 32}
+    meta = {"format": "pt", "engram_vocab_map_metadata": json.dumps(emeta, separators=(",", ":"))}
     for si, bucket in enumerate(shards):
         if bucket:
-            write_shard(out / shard_name(si, a.shards), bucket, {"format": "pt"})
+            write_shard(out / shard_name(si, a.shards), bucket, meta)
 
     with open(out / "model.safetensors.index.json", "w", encoding="utf-8") as fh:
         json.dump({"metadata": {"total_size": total_bytes}, "weight_map": wmap},
