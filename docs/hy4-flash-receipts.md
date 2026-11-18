@@ -13,10 +13,10 @@
 
 ## 未完成（明确的下一道坎）
 
-1. **42 层完整前向 OOM**。DGX00 111GiB available 下，加载 25 秒 RSS 已 67GB 并继续增长。专家已走 affine4 按需解码，但非专家 BF16 张量（`o_proj`、`linear_gate`、`q_b/kv_b`、`shared_experts` 等）仍全量转 f32 常驻。修法：非专家也改 mmap + 按需 matvec / 逐层流式，不能靠调参绕过。
+1. ~~42 层完整前向 OOM~~ **已解决（提交 `12799651c`）**：非专家 BF16 张量 >100k 元素保留 mmap 字节（`Value.bf16raw`），`ops.matvecBf16` 在 matvec 内流式解码，全部 matvec 调用点经 `matvecW` 分发（含 router 的 `gate.weight`）。DGX00 全 42 层 Q4 前向通过：1272 张量、4 token、有限 logits，86.0s（约 0.046 tok/s，CPU 懒解码基线）。
 2. EXL3 未覆盖 packed 专家与 Engram；需要把这两个自定义 Module 暴露给 exllamav3 量化器。
 3. 视觉 tower / 多模态未接。
-4. 完整模型（42 层）decode/prefill/concurrency 性能 receipts 未收；当前只有 2 层 CPU 基线。
+4. 完整模型（42 层）性能基线已有 0.046 tok/s（CPU 懒解码）；decode/prefill/concurrency 的 GPU 路径 receipts 仍未收。
 
 ## 相关工具
 
