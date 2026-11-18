@@ -5,7 +5,8 @@ const std = @import("std");
 const ops = @import("ops.zig");
 
 /// Longest draft prefix whose tokens equal the target's greedy picks.
-/// `greedy` holds one target pick per draft position, in draft order.
+
+// `greedy` holds one target pick per draft position, in draft order.
 pub fn acceptPrefix(draft: []const u32, greedy: []const u32) !usize {
     if (draft.len != greedy.len) return error.DraftLengthMismatch;
     var n: usize = 0;
