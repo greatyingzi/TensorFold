@@ -15,3 +15,33 @@ pub fn steps(b: *std.Build, test_step: *std.Build.Step) void {
     named.dependOn(&run.step);
     test_step.dependOn(&run.step);
 }
+
+
+pub fn runner(b: *std.Build, target: std.Build.ResolvedTarget) void {
+    const sys = b.createModule(.{ .root_source_file = b.path("zig/src/platform/sys.zig"), .target = target, .optimize = .debug });
+    const cc = b.createModule(.{ .root_source_file = b.path("zig/src/core/checkpoint_config.zig"), .target = target, .optimize = .debug });
+    const sg = b.createModule(.{ .root_source_file = b.path("zig/src/core/save_guard.zig"), .target = target, .optimize = .debug });
+    const br = b.createModule(.{ .root_source_file = b.path("zig/src/core/bf16_round.zig"), .target = target, .optimize = .debug });
+    const q3l = b.createModule(.{ .root_source_file = b.path("zig/src/core/qwen35_layers.zig"), .target = target, .optimize = .debug });
+    const q3r = b.createModule(.{ .root_source_file = b.path("zig/src/core/qwen35_rules.zig"), .target = target, .optimize = .debug });
+    const rc = b.createModule(.{ .root_source_file = b.path("zig/src/core/rope_config.zig"), .target = target, .optimize = .debug });
+    const pf = b.createModule(.{ .root_source_file = b.path("zig/src/core/profile.zig"), .target = target, .optimize = .debug });
+    const root = b.createModule(.{
+        .root_source_file = b.path("zig/hy4_runner.zig"),
+        .target = target,
+        .optimize = .ReleaseSafe,
+        .imports = &.{
+            .{ .name = "sys", .module = sys },
+            .{ .name = "checkpoint_config", .module = cc },
+            .{ .name = "save_guard", .module = sg },
+            .{ .name = "bf16_round", .module = br },
+            .{ .name = "qwen35_layers", .module = q3l },
+            .{ .name = "qwen35_rules", .module = q3r },
+            .{ .name = "rope_config", .module = rc },
+            .{ .name = "profile", .module = pf },
+        },
+    });
+    const exe = b.addExecutable(.{ .name = "hy4-runner", .root_module = root });
+    const step = b.step("hy4-runner", "Build the bounded Hy4 checkpoint smoke runner");
+    step.dependOn(&b.addInstallArtifact(exe, .{}).step);
+}

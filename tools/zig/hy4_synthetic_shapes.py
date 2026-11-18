@@ -320,24 +320,24 @@ _INDEXER_SHAPES = {
 _DFLY_SHAPES = {
     "input_layernorm.weight": lambda d: (d["H"],),
     "post_attention_layernorm.weight": lambda d: (d["H"],),
-    "mlp.gate_proj.weight": lambda d: (d["I"], d["H"]),
-    "mlp.up_proj.weight": lambda d: (d["I"], d["H"]),
-    "mlp.down_proj.weight": lambda d: (d["H"], d["I"]),
+    "mlp.gate_proj.weight": lambda d: (3 * d["H"], d["H"]),
+    "mlp.up_proj.weight": lambda d: (3 * d["H"], d["H"]),
+    "mlp.down_proj.weight": lambda d: (d["H"], 3 * d["H"]),
     "self_attn.kv_a_layernorm.weight": lambda d: (d["KVL"],),
-    "self_attn.kv_a_proj_with_mqa.weight": lambda d: (d["KVL"] + d["KVH"] * d["ROPE"], d["H"]),
+    "self_attn.kv_a_proj_with_mqa.weight": lambda d: (d["KVL"] + d["ROPE"], d["H"]),
     "self_attn.kv_b_proj.weight": lambda d: (d["NH"] * (d["NOPE"] + d["VDIM"]), d["KVL"]),
     "self_attn.learnable_sink_param": lambda d: (d["NH"],),
-    "self_attn.linear_gate.weight": lambda d: (d["NH"], d["QL"]),
+    "self_attn.linear_gate.weight": lambda d: (d["NH"] * d["VDIM"], d["H"]),
     "self_attn.o_proj.weight": lambda d: (d["H"], d["NH"] * d["VDIM"]),
-    "self_attn.post_proj_norm.weight": lambda d: (d["NH"] * d["VDIM"],),
+    "self_attn.post_proj_norm.weight": lambda d: (d["H"],),
     "self_attn.q_a_layernorm.weight": lambda d: (d["QL"],),
     "self_attn.q_a_proj.weight": lambda d: (d["QL"], d["H"]),
-    "self_attn.q_b_proj.weight": lambda d: (d["NH"] * (2 * d["NOPE"] + d["ROPE"]), d["QL"]),
+    "self_attn.q_b_proj.weight": lambda d: (d["NH"] * (d["NOPE"] + d["ROPE"]), d["QL"]),
 }
 
 _DFLY_EXTRA = {
-    "confidence_head.proj.bias": lambda d: (d["SPEC"],),
-    "confidence_head.proj.weight": lambda d: (d["SPEC"], d["H"]),
+    "confidence_head.proj.bias": lambda d: (1,),
+    "confidence_head.proj.weight": lambda d: (1, d["H"]),
     "final_norm.weight": lambda d: (d["H"],),
     "hidden_correction.down_proj.weight": lambda d: (d["H"], d["H"]),
     "hidden_correction.embed_norm.weight": lambda d: (d["H"],),
@@ -389,9 +389,9 @@ def shape_for(name, cfg, d):
         if s == "self_attn.q_a_layernorm.weight":
             return (d["QL"],)
         if s == "self_attn.q_b_proj.weight":
-            return (d["NH"] * (2 * d["NOPE"] + d["ROPE"]), d["QL"])
+            return (d["NH"] * (d["NOPE"] + d["ROPE"]), d["QL"])
         if s == "self_attn.kv_a_proj_with_mqa.weight":
-            return (d["KVL"] + d["KVH"] * d["ROPE"], H)
+            return (d["KVL"] + d["ROPE"], H)
         if s == "self_attn.kv_a_layernorm.weight":
             return (d["KVL"],)
         if s == "self_attn.kv_b_proj.weight":
@@ -399,11 +399,11 @@ def shape_for(name, cfg, d):
         if s == "self_attn.o_proj.weight":
             return (H, d["NH"] * d["VDIM"])
         if s == "self_attn.post_proj_norm.weight":
-            return (d["NH"] * d["VDIM"],)
+            return (d["H"],)
         if s == "self_attn.learnable_sink_param":
             return (d["NH"],)
         if s == "self_attn.linear_gate.weight":
-            return (d["NH"], d["QL"])
+            return (d["NH"] * d["VDIM"], d["H"])
         if s == "mlp.gate_proj.weight":
             return (d["I"], H)
         if s == "mlp.up_proj.weight":
@@ -411,7 +411,7 @@ def shape_for(name, cfg, d):
         if s == "mlp.down_proj.weight":
             return (H, d["I"])
         if s == "mlp.post_fc2_norm.weight":
-            return (d["I"],)
+            return (d["H"],)
         if s == "mlp.gate.weight":
             return (d["E"], H)
         if s == "mlp.gate.e_score_correction_bias":
@@ -419,7 +419,7 @@ def shape_for(name, cfg, d):
         if s == "mlp.experts.gate_up_proj":
             return (d["E"], H, d["LAT"])
         if s == "mlp.experts.down_proj":
-            return (d["E"], d["LAT"], H)
+            return (d["E"], d["LAT"], d["LAT"])
         if s == "mlp.routed_expert_up_proj.weight":
             return (H, d["LAT"])
         if s == "mlp.routed_expert_down_proj.weight":

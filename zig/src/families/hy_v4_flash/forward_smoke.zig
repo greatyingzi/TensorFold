@@ -37,8 +37,8 @@ pub fn oneToken(gpa: std.mem.Allocator, c: *const config.Config, bag: *const wei
     const nope = c.qk_nope;
     const vdim = c.v_dim;
     const heads = c.heads;
-    const q_out = heads * (2 * nope + c.qk_rope);
-    const kv_a_len = c.kv_lora + c.kv_heads * c.qk_rope;
+    const q_out = heads * (nope + c.qk_rope);
+    const kv_a_len = c.kv_lora + c.qk_rope;
     const kv_b_len = heads * (nope + vdim);
 
     const xn = try gpa.alloc(f32, h);

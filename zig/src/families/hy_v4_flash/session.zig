@@ -91,7 +91,12 @@ pub const Session = struct {
 
     fn expandRope(self: *Session, src: []const f32, heads: usize, rope: usize, dst: []f32) !void {
         const kv_heads = self.c.kv_heads;
-        if (src.len != kv_heads * rope or heads % kv_heads != 0 or dst.len != heads * rope) return error.BadAttentionShape;
+        if (dst.len != heads * rope) return error.BadAttentionShape;
+        if (src.len == rope) {
+            for (0..heads) |h| @memcpy(dst[h * rope ..][0..rope], src);
+            return;
+        }
+        if (src.len != kv_heads * rope or heads % kv_heads != 0) return error.BadAttentionShape;
         const rep = heads / kv_heads;
         for (0..heads) |h| @memcpy(dst[h * rope ..][0..rope], src[(h / rep) * rope ..][0..rope]);
     }
@@ -117,8 +122,8 @@ pub const Session = struct {
             const rope = if (plan.kind == .sliding) c.swa_qk_rope else c.qk_rope;
             const vdim = if (plan.kind == .sliding) c.swa_v_dim else c.v_dim;
             const heads = c.layer[li].heads;
-            const q_out = heads * (2 * nope + rope);
-            const kv_a_len = c.kv_lora + c.kv_heads * rope;
+            const q_out = heads * (nope + rope);
+            const kv_a_len = c.kv_lora + rope;
             const kv_b_len = heads * (nope + vdim);
 
             if (plan.engram) |ei| {
@@ -148,12 +153,12 @@ pub const Session = struct {
             const cos = try a.alloc(f32, rope);
             const sin = try a.alloc(f32, rope);
             try rotary.cosSin(c, plan.kind, @intCast(self.pos), cos, sin);
-            for (0..heads) |hh| try rotary.apply(q[hh * (2 * nope + rope) ..][0 .. 2 * nope + rope], cos, sin, rope);
+            for (0..heads) |hh| try rotary.apply(q[hh * (nope + rope) ..][0 .. nope + rope], cos, sin, rope);
             const q_nope = try a.alloc(f32, heads * nope);
             const q_rope = try a.alloc(f32, heads * rope);
             for (0..heads) |hh| {
-                @memcpy(q_nope[hh * nope ..][0..nope], q[hh * (2 * nope + rope) ..][0..nope]);
-                @memcpy(q_rope[hh * rope ..][0..rope], q[hh * (2 * nope + rope) + 2 * nope ..][0..rope]);
+                @memcpy(q_nope[hh * nope ..][0..nope], q[hh * (nope + rope) ..][0..nope]);
+                @memcpy(q_rope[hh * rope ..][0..rope], q[hh * (nope + rope) + nope ..][0..rope]);
             }
 
             const kva = try a.alloc(f32, kv_a_len);

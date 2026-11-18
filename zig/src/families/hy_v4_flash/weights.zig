@@ -56,6 +56,15 @@ fn join(a: std.mem.Allocator, dir: []const u8, file: []const u8) ![]u8 {
 
 /// Load every modeled tensor into host memory under its engine name.
 pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const loader.EngramMeta) !Bag {
+    return loadInner(gpa, io, dir, meta, 0);
+}
+
+/// Load only the first `limit` backbone layers plus global tensors, for a bounded real-checkpoint smoke.
+pub fn loadPrefix(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const loader.EngramMeta, limit: usize) !Bag {
+    return loadInner(gpa, io, dir, meta, limit);
+}
+
+fn loadInner(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const loader.EngramMeta, prefix_limit: usize) !Bag {
     const cfg_path = try join(gpa, dir, "config.json");
     defer gpa.free(cfg_path);
     const cfg_text = try std.Io.Dir.cwd().readFileAlloc(io, cfg_path, gpa, .limited(1 << 22));
@@ -92,6 +101,16 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const lo
         while (it.next()) |item| {
             if (!std.mem.eql(u8, item.value_ptr.string, entry.value_ptr.string)) continue;
             const ckpt = item.key_ptr.*;
+            if (prefix_limit > 0) {
+                const lm = "model.layers.";
+                if (std.mem.startsWith(u8, ckpt, lm)) {
+                    const rest = ckpt[lm.len..];
+                    const dot = std.mem.indexOfScalar(u8, rest, '.') orelse 0;
+                    const li = std.fmt.parseInt(usize, rest[0..dot], 10) catch 0;
+                    if (li >= prefix_limit) continue;
+                }
+                if (std.mem.startsWith(u8, ckpt, "model.dfly_layers.")) continue;
+            }
             const t = sf.get(ckpt) orelse return error.IndexedTensorMissing;
             var base = ckpt;
             if (std.mem.endsWith(u8, ckpt, ".weight") and
@@ -131,7 +150,10 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const lo
                     continue;
                 }
             }
-            if (t.dtype != want.dtype or !want.is(t.rank, t.shape[0..t.rank])) return error.Hy4TensorShapeMismatch;
+            if (t.dtype != want.dtype or !want.is(t.rank, t.shape[0..t.rank])) {
+                std.debug.print("SHAPE_MISMATCH {s} dtype={s}/{s} rank={d}/{d} got={any} want={any}\n", .{ ckpt, @tagName(t.dtype), @tagName(want.dtype), t.rank, want.rank, t.shape[0..t.rank], want });
+                return error.Hy4TensorShapeMismatch;
+            }
             const key = try names.rename(a, base);
             const count = t.numel();
             var shape: [3]usize = .{ 0, 0, 0 };

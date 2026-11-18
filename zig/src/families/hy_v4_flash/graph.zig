@@ -71,7 +71,8 @@ pub fn validate(c: *const cfg.Config) error{UnsupportedHy4Geometry}!void {
     if (c.experts == 0 or c.topk == 0 or c.topk > c.experts or c.dense_layers == 0 or c.dense_layers >= c.layers) return error.UnsupportedHy4Geometry;
     if (c.window == 0 or c.index_ratio == 0 or c.index_group_topk == 0 or c.index_candidate_topk == 0) return error.UnsupportedHy4Geometry;
     if (c.index_ratio > c.window or c.index_group_topk > c.index_candidate_topk) return error.UnsupportedHy4Geometry;
-    if (c.engram.count == 0 or c.engram.ngram != 3 or c.engram.heads == 0 or c.engram.embed == 0) return error.UnsupportedHy4Geometry;
+    if (!c.allow_no_engram and c.engram.count == 0) return error.UnsupportedHy4Geometry;
+    if (c.engram.heads == 0 or c.engram.embed == 0) return error.UnsupportedHy4Geometry;
     if (c.dfly.layers == 0 or c.dfly.drafts == 0 or c.dfly.target_count == 0) return error.UnsupportedHy4Geometry;
     for (0..c.layers) |i| {
         if (i >= c.dense_layers and !c.layer[i].moe) return error.UnsupportedHy4Geometry;

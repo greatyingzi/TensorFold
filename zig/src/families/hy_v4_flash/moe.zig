@@ -117,7 +117,7 @@ pub fn latentMoe(gpa: std.mem.Allocator, c: *const config.Config, bag: *const we
     const gu = try f32s(bag, gu_name);
     const dn = try f32s(bag, dn_name);
     const gu_rows = 2 * lat;
-    if (gu.len != c.experts * gu_rows * lat or dn.len != c.experts * lat * gu_rows) return error.BadMoeShape;
+    if (gu.len != c.experts * gu_rows * lat or dn.len != c.experts * lat * lat) return error.BadMoeShape;
     const act = try gpa.alloc(f32, gu_rows);
     defer gpa.free(act);
     const expert_out = try gpa.alloc(f32, lat);
@@ -128,7 +128,7 @@ pub fn latentMoe(gpa: std.mem.Allocator, c: *const config.Config, bag: *const we
     for (r.indices, r.weights) |e, w| {
         try ops.matvec(act, gu[e * gu_rows * lat ..][0 .. gu_rows * lat], latent_in, gu_rows, lat);
         swiglu(act[0..lat], act[lat..], c.swiglu_limit);
-        try ops.matvec(expert_out, dn[e * lat * gu_rows ..][0 .. lat * gu_rows], act, lat, gu_rows);
+        try ops.matvec(expert_out, dn[e * lat * lat ..][0 .. lat * lat], act[0..lat], lat, lat);
         for (acc, expert_out) |*a, v| a.* += @as(f32, w) * v;
     }
 

@@ -77,6 +77,7 @@ pub const Config = struct {
     norm_topk_prob: bool = false,
     swiglu_limit: f32 = 0,
     mrope_section: [3]u32 = @splat(0),
+    allow_no_engram: bool = false,
     quant_method: []const u8 = "",
     quant_bits: f32 = 0,
     quant_codebook: []const u8 = "",

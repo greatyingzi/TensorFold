@@ -33,7 +33,7 @@ pub fn draft(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weight
     const nope = c.qk_nope;
     const rope = c.qk_rope;
     const vdim = c.v_dim;
-    const kv_a_len = c.kv_lora + c.kv_heads * rope;
+    const kv_a_len = c.kv_lora + rope;
     const kv_b_len = heads * (nope + vdim);
 
     const embed = try f32s(bag, "embed_tokens.weight");
@@ -53,7 +53,7 @@ pub fn draft(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weight
     const tmp = try a.alloc(f32, h);
     const qa = try a.alloc(f32, q);
     const qn = try a.alloc(f32, q);
-    const qb = try a.alloc(f32, heads * (2 * nope + rope));
+    const qb = try a.alloc(f32, heads * (nope + rope));
     const kva = try a.alloc(f32, kv_a_len);
     const kvn = try a.alloc(f32, c.kv_lora);
     const kvb = try a.alloc(f32, kv_b_len);
@@ -71,9 +71,9 @@ pub fn draft(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weight
         const qbn = try nm(a, "dfly_layers.{d}.self_attn.q_b_proj.weight", .{li});
         try ops.matvec(qa, try f32s(bag, qan), tmp, q, h);
         try ops.rmsNorm(qn, qa, try f32s(bag, qal), c.eps);
-        try ops.matvec(qb, try f32s(bag, qbn), qn, heads * (2 * nope + rope), q);
+        try ops.matvec(qb, try f32s(bag, qbn), qn, heads * (nope + rope), q);
         try rotary.cosSin(c, .sparse, @intCast(pos + li), cos, sin);
-        for (0..heads) |hh| try rotary.apply(qb[hh * (2 * nope + rope) ..][0 .. 2 * nope + rope], cos, sin, rope);
+        for (0..heads) |hh| try rotary.apply(qb[hh * (nope + rope) ..][0 .. nope + rope], cos, sin, rope);
         const kan = try nm(a, "dfly_layers.{d}.self_attn.kv_a_proj_with_mqa.weight", .{li});
         const kal = try nm(a, "dfly_layers.{d}.self_attn.kv_a_layernorm.weight", .{li});
         const kbn = try nm(a, "dfly_layers.{d}.self_attn.kv_b_proj.weight", .{li});
@@ -108,9 +108,10 @@ pub fn draft(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weight
         for (state, tmp) |*v, x| v.* += x;
     }
     try ops.rmsNorm(tmp, state, try f32s(bag, "dfly_layers.final_norm.weight"), c.eps);
-    const head = try a.alloc(f32, c.dfly.drafts);
-    try ops.matvec(head, try f32s(bag, "dfly_layers.confidence_head.proj.weight"), tmp, c.dfly.drafts, h);
+    const head = try a.alloc(f32, 1);
+    try ops.matvec(head, try f32s(bag, "dfly_layers.confidence_head.proj.weight"), tmp, 1, h);
     for (0..out.len) |i| out[i] = @intCast(i);
+    _ = head[0];
     std.mem.sort(u32, out, head, struct {
         fn lessThan(v: []const f32, x: u32, y: u32) bool {
             if (v[x] != v[y]) return v[x] > v[y];

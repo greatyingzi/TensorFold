@@ -45,8 +45,8 @@ fn mlaSelf(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weights.
     const nope = if (kind == .sliding) c.swa_qk_nope else c.qk_nope;
     const rope = if (kind == .sliding) c.swa_qk_rope else c.qk_rope;
     const vdim = if (kind == .sliding) c.swa_v_dim else c.v_dim;
-    const q_out = heads * (2 * nope + rope);
-    const kv_a_len = c.kv_lora + c.kv_heads * rope;
+    const q_out = heads * (nope + rope);
+    const kv_a_len = c.kv_lora + rope;
     const kv_b_len = heads * (nope + vdim);
 
     const qa = try gpa.alloc(f32, c.q_lora);
@@ -70,7 +70,7 @@ fn mlaSelf(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weights.
     const sin = try gpa.alloc(f32, rope);
     defer gpa.free(sin);
     try rotary.cosSin(c, kind, 0, cos, sin);
-    for (0..heads) |h| try rotary.apply(q[h * (2 * nope + rope) ..][0 .. 2 * nope + rope], cos, sin, rope);
+    for (0..heads) |h| try rotary.apply(q[h * (nope + rope) ..][0 .. nope + rope], cos, sin, rope);
 
     const kva = try gpa.alloc(f32, kv_a_len);
     defer gpa.free(kva);

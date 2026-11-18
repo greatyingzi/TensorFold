@@ -77,27 +77,28 @@ pub fn expected(c: *const cfg.Config, name: []const u8, lookup_len: usize) ?Shap
         if (dot) |d| {
             const idx = std.fmt.parseInt(usize, rest[0..d], 10) catch {
         if (std.mem.eql(u8, rest, "final_norm.weight") or std.mem.eql(u8, rest, "hidden_correction.embed_norm.weight") or std.mem.eql(u8, rest, "hidden_correction.hidden_norm.weight") or std.mem.eql(u8, rest, "mtp_fusion.enorm.weight") or std.mem.eql(u8, rest, "mtp_fusion.hnorm.weight") or std.mem.eql(u8, rest, "mtp_fusion.gate")) return v1(c.hidden);
-        if (std.mem.eql(u8, rest, "hidden_correction.down_proj.weight") or std.mem.eql(u8, rest, "hidden_correction.up_proj.weight") or std.mem.eql(u8, rest, "hidden_correction.gate_proj.weight")) return v2(c.hidden, c.hidden);
+        if (std.mem.eql(u8, rest, "hidden_correction.gate_proj.weight") or std.mem.eql(u8, rest, "hidden_correction.up_proj.weight")) return v2(c.hidden, 2 * c.hidden);
+        if (std.mem.eql(u8, rest, "hidden_correction.down_proj.weight")) return v2(c.hidden, c.hidden);
         if (std.mem.eql(u8, rest, "mtp_fusion.eh_proj.weight")) return v2(c.hidden, 2 * c.hidden);
-        if (std.mem.eql(u8, rest, "confidence_head.proj.bias")) return v1(c.dfly.drafts);
-        if (std.mem.eql(u8, rest, "confidence_head.proj.weight")) return v2(c.dfly.drafts, c.hidden);
+        if (std.mem.eql(u8, rest, "confidence_head.proj.bias")) return v1(1);
+        if (std.mem.eql(u8, rest, "confidence_head.proj.weight")) return v2(1, c.hidden);
                 return null;
             };
             if (idx >= c.dfly.layers) return null;
             const ds = rest[d + 1 ..];
             if (std.mem.eql(u8, ds, "input_layernorm.weight") or std.mem.eql(u8, ds, "post_attention_layernorm.weight")) return v1(c.hidden);
-            if (std.mem.eql(u8, ds, "mlp.gate_proj.weight") or std.mem.eql(u8, ds, "mlp.up_proj.weight")) return v2(c.intermediate, c.hidden);
-            if (std.mem.eql(u8, ds, "mlp.down_proj.weight")) return v2(c.hidden, c.intermediate);
+            if (std.mem.eql(u8, ds, "mlp.gate_proj.weight") or std.mem.eql(u8, ds, "mlp.up_proj.weight")) return v2(3 * c.hidden, c.hidden);
+            if (std.mem.eql(u8, ds, "mlp.down_proj.weight")) return v2(c.hidden, 3 * c.hidden);
             if (std.mem.eql(u8, ds, "self_attn.q_a_proj.weight")) return v2(c.q_lora, c.hidden);
             if (std.mem.eql(u8, ds, "self_attn.q_a_layernorm.weight")) return v1(c.q_lora);
-            if (std.mem.eql(u8, ds, "self_attn.q_b_proj.weight")) return v2(c.heads * (2 * c.qk_nope + c.qk_rope), c.q_lora);
-            if (std.mem.eql(u8, ds, "self_attn.kv_a_proj_with_mqa.weight")) return v2(c.kv_lora + c.kv_heads * c.qk_rope, c.hidden);
+            if (std.mem.eql(u8, ds, "self_attn.q_b_proj.weight")) return v2(c.heads * (c.qk_nope + c.qk_rope), c.q_lora);
+            if (std.mem.eql(u8, ds, "self_attn.kv_a_proj_with_mqa.weight")) return v2(c.kv_lora + c.qk_rope, c.hidden);
             if (std.mem.eql(u8, ds, "self_attn.kv_a_layernorm.weight")) return v1(c.kv_lora);
             if (std.mem.eql(u8, ds, "self_attn.kv_b_proj.weight")) return v2(c.heads * (c.qk_nope + c.v_dim), c.kv_lora);
             if (std.mem.eql(u8, ds, "self_attn.o_proj.weight")) return v2(c.hidden, c.heads * c.v_dim);
-            if (std.mem.eql(u8, ds, "self_attn.post_proj_norm.weight")) return v1(c.heads * c.v_dim);
+            if (std.mem.eql(u8, ds, "self_attn.post_proj_norm.weight")) return v1(c.hidden);
             if (std.mem.eql(u8, ds, "self_attn.learnable_sink_param")) return v1(c.heads);
-            if (std.mem.eql(u8, ds, "self_attn.linear_gate.weight")) return v2(c.heads, c.q_lora);
+            if (std.mem.eql(u8, ds, "self_attn.linear_gate.weight")) return v2(c.heads * c.v_dim, c.hidden);
             return null;
         }
         return null;
@@ -118,34 +119,35 @@ pub fn expected(c: *const cfg.Config, name: []const u8, lookup_len: usize) ?Shap
     const vdim = if (kind == .sliding) c.swa_v_dim else c.v_dim;
     if (std.mem.eql(u8, s, "self_attn.q_a_proj.weight")) return v2(c.q_lora, c.hidden);
     if (std.mem.eql(u8, s, "self_attn.q_a_layernorm.weight")) return v1(c.q_lora);
-    if (std.mem.eql(u8, s, "self_attn.q_b_proj.weight")) return v2(heads * (2 * nope + rope), c.q_lora);
-    if (std.mem.eql(u8, s, "self_attn.kv_a_proj_with_mqa.weight")) return v2(c.kv_lora + c.kv_heads * rope, c.hidden);
+    if (std.mem.eql(u8, s, "self_attn.q_b_proj.weight")) return v2(heads * (nope + rope), c.q_lora);
+    if (std.mem.eql(u8, s, "self_attn.kv_a_proj_with_mqa.weight")) return v2(c.kv_lora + rope, c.hidden);
     if (std.mem.eql(u8, s, "self_attn.kv_a_layernorm.weight")) return v1(c.kv_lora);
     if (std.mem.eql(u8, s, "self_attn.kv_b_proj.weight")) return v2(heads * (nope + vdim), c.kv_lora);
     if (std.mem.eql(u8, s, "self_attn.o_proj.weight")) return v2(c.hidden, heads * vdim);
-    if (std.mem.eql(u8, s, "self_attn.post_proj_norm.weight")) return v1(heads * vdim);
-    if (std.mem.eql(u8, s, "self_attn.learnable_sink_param")) return v1(heads);
-    if (std.mem.eql(u8, s, "self_attn.linear_gate.weight")) return v2(heads, c.q_lora);
+    if (std.mem.eql(u8, s, "self_attn.post_proj_norm.weight")) return v1(c.hidden);
+    if (std.mem.eql(u8, s, "self_attn.learnable_sink_param")) return f32v1(heads);
+    if (std.mem.eql(u8, s, "self_attn.linear_gate.weight")) return v2(heads * vdim, c.hidden);
 
     const ip = "self_attn.compressed_indexer.";
     if (std.mem.startsWith(u8, s, ip)) {
         const x = s[ip.len..];
         if (std.mem.eql(u8, x, "head_weight_projection.weight")) return v2(c.index_heads, c.hidden);
-        if (std.mem.eql(u8, x, "intra_group_ape")) return v2(c.index_ratio, c.index_dim);
-        if (std.mem.eql(u8, x, "key_gate_projection.weight")) return v2(c.index_dim, c.index_dim);
-        if (std.mem.eql(u8, x, "key_norm.weight") or std.mem.eql(u8, x, "token_key_norm.weight")) return v1(c.index_dim);
-        if (std.mem.eql(u8, x, "key_value_projection.weight")) return v2(c.index_dim, c.index_dim);
+        if (std.mem.eql(u8, x, "intra_group_ape")) return f32v2(c.index_ratio, c.index_dim);
+        if (std.mem.eql(u8, x, "key_gate_projection.weight")) return f32v2(c.index_dim, c.index_dim);
+        if (std.mem.eql(u8, x, "key_norm.weight")) return f32v1(c.index_dim);
+        if (std.mem.eql(u8, x, "token_key_norm.weight")) return v1(c.index_dim);
+        if (std.mem.eql(u8, x, "key_value_projection.weight")) return f32v2(c.index_dim, c.index_dim);
         if (std.mem.eql(u8, x, "token_key_projection.weight")) return v2(c.index_dim, c.hidden);
         if (std.mem.eql(u8, x, "query_projection.weight")) return v2(c.index_heads * c.index_dim, c.q_lora);
     }
 
     if (std.mem.eql(u8, s, "mlp.gate_proj.weight") or std.mem.eql(u8, s, "mlp.up_proj.weight")) return v2(c.intermediate, c.hidden);
     if (std.mem.eql(u8, s, "mlp.down_proj.weight")) return v2(c.hidden, c.intermediate);
-    if (std.mem.eql(u8, s, "mlp.post_fc2_norm.weight")) return v1(c.intermediate);
+    if (std.mem.eql(u8, s, "mlp.post_fc2_norm.weight")) return v1(c.hidden);
     if (std.mem.eql(u8, s, "mlp.gate.weight")) return v2(c.experts, c.hidden);
-    if (std.mem.eql(u8, s, "mlp.gate.e_score_correction_bias")) return v1(c.experts);
+    if (std.mem.eql(u8, s, "mlp.gate.e_score_correction_bias")) return f32v1(c.experts);
     if (std.mem.eql(u8, s, "mlp.experts.gate_up_proj")) return v3(c.experts, c.hidden, c.latent);
-    if (std.mem.eql(u8, s, "mlp.experts.down_proj")) return v3(c.experts, c.latent, c.hidden);
+    if (std.mem.eql(u8, s, "mlp.experts.down_proj")) return v3(c.experts, c.latent, c.latent);
     if (std.mem.eql(u8, s, "mlp.routed_expert_up_proj.weight")) return v2(c.hidden, c.latent);
     if (std.mem.eql(u8, s, "mlp.routed_expert_down_proj.weight")) return v2(c.latent, c.hidden);
     if (std.mem.eql(u8, s, "mlp.shared_experts.gate_proj.weight") or std.mem.eql(u8, s, "mlp.shared_experts.up_proj.weight")) return v2(c.latent, c.hidden);
