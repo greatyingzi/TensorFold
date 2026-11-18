@@ -34,8 +34,6 @@ pub fn multipliers(
 }
 
 // ---------------------------------------------------------------------------
-// SeedSequence (NumPy 2.0.2 default pool_size=4, no spawn key)
-// ---------------------------------------------------------------------------
 
 const INIT_A: u32 = 0x43b0d7e5;
 const MULT_A: u32 = 0x931e8875;
@@ -77,7 +75,6 @@ fn seedWords(seed: u64) [4]u64 {
         }
     }
     // A u64 seed has at most two entropy words, so the extra-entropy loop in
-    // mix_entropy is unreachable here (pool_size = 4).
 
     var words32: [8]u32 = undefined;
     var hc2: u32 = INIT_B;
@@ -90,7 +87,6 @@ fn seedWords(seed: u64) [4]u64 {
     }
 
     // generate_state(4, uint64): 8 uint32 words viewed as little-endian u64,
-    // i.e. the even-indexed word is the LOW half of each 64-bit value.
     var words: [4]u64 = undefined;
     for (0..4) |i| {
         words[i] = (@as(u64, words32[2 * i + 1]) << 32) | @as(u64, words32[2 * i]);
@@ -98,8 +94,6 @@ fn seedWords(seed: u64) [4]u64 {
     return words;
 }
 
-// ---------------------------------------------------------------------------
-// PCG64 XSL-RR 128/64 (NumPy 2.0.2 pcg64.h, native __uint128_t path)
 // ---------------------------------------------------------------------------
 
 const MULT_128: u128 = (@as(u128, 2549297995355413924) << 64) | 4865540595714422341;
@@ -152,8 +146,6 @@ const Pcg64 = struct {
     }
 };
 
-// ---------------------------------------------------------------------------
-// Golden values (numpy 2.0.2; compressed_vocab_size = 92620, seed = 0)
 // ---------------------------------------------------------------------------
 
 const compressed_vocab: u64 = 92620;
