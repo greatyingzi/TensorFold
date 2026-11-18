@@ -32,6 +32,27 @@ fn u32s(bag: *const weights.Bag, name: []const u8, count: usize) ![]const u32 {
     return out;
 }
 
+/// Dequantize raw code/scale/bias bytes into f32, independent of the Bag (used by the checkpoint loader).
+pub fn dequantRaw(a: std.mem.Allocator, code_bytes: []const u8, scale_bytes: []const u8, bias_bytes: []const u8, values: usize) ![]f32 {
+    if (values == 0 or values % group != 0) return error.BadAffineTensor;
+    const words = values / 8;
+    const groups = values / group;
+    if (code_bytes.len < words * 4 or scale_bytes.len < groups * 2 or bias_bytes.len < groups * 2) return error.BadAffineTensor;
+    const w = try a.alloc(u32, words);
+    defer a.free(w);
+    const sc = try a.alloc(u16, groups);
+    defer a.free(sc);
+    const bi = try a.alloc(u16, groups);
+    defer a.free(bi);
+    for (w, 0..) |*v, i| v.* = std.mem.readInt(u32, code_bytes[i * 4 ..][0..4], .little);
+    for (sc, 0..) |*v, i| v.* = std.mem.readInt(u16, scale_bytes[i * 2 ..][0..2], .little);
+    for (bi, 0..) |*v, i| v.* = std.mem.readInt(u16, bias_bytes[i * 2 ..][0..2], .little);
+    const out = try a.alloc(f32, values);
+    errdefer a.free(out);
+    core.dequantize(w, sc, bi, out);
+    return out;
+}
+
 /// Dequantize one affine4 tensor into f32; `values` is the flattened row-major element count.
 pub fn materialize(gpa: std.mem.Allocator, bag: *const weights.Bag, name: []const u8, values: usize) ![]f32 {
     if (values == 0 or values % group != 0) return error.BadAffineTensor;

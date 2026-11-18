@@ -6,6 +6,7 @@ const graph = @import("graph.zig");
 const names = @import("tensor_names.zig");
 const shapes = @import("shapes.zig");
 const loader = @import("loader.zig");
+const affine4 = @import("affine4.zig");
 
 pub const Value = union(enum) {
     f32s: []f32,
@@ -92,6 +93,23 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const lo
             const ckpt = item.key_ptr.*;
             const t = sf.get(ckpt) orelse return error.IndexedTensorMissing;
             const want = shapes.expected(&c, ckpt, lookup_len) orelse continue;
+            const qn = try std.mem.concat(a, u8, &.{ ckpt, ".weight" });
+            if (sf.get(qn)) |qt| {
+                if (qt.dtype == .u32) {
+                    const sn = try std.mem.concat(a, u8, &.{ ckpt, ".scales" });
+                    const bn = try std.mem.concat(a, u8, &.{ ckpt, ".biases" });
+                    const st = sf.get(sn) orelse return error.MissingAffineTensor;
+                    const bt = sf.get(bn) orelse return error.MissingAffineTensor;
+                    if (st.dtype != .bf16 or bt.dtype != .bf16) return error.UnsupportedHy4TensorDtype;
+                    var vals: usize = want.a;
+                    if (want.rank > 1) vals *= want.b;
+                    if (want.rank > 2) vals *= want.c;
+                    const buf = try affine4.dequantRaw(a, qt.bytes, st.bytes, bt.bytes, vals);
+                    const qkey = try names.rename(a, ckpt);
+                    try out.map.put(qkey, .{ .name = qkey, .rank = want.rank, .shape = .{ want.a, want.b, want.c }, .value = .{ .f32s = buf } });
+                    continue;
+                }
+            }
             if (t.dtype != want.dtype or !want.is(t.rank, t.shape[0..t.rank])) return error.Hy4TensorShapeMismatch;
             const key = try names.rename(a, ckpt);
             const count = t.numel();
