@@ -129,7 +129,7 @@ test "hy4 host: the synthetic checkpoint loads into a host tensor bag" {
     const meta = loader.EngramMeta{ .source_tokenizer_len = 128 };
     var bag = try load(gpa, std.testing.io, "zig/src/families/hy_v4_flash/fixtures/synthetic", &meta);
     defer bag.deinit();
-    try std.testing.expect(bag.count() >= 169);
+    try std.testing.expect(bag.count() >= 204);
     const q = bag.get("layers.0.self_attn.q_a_proj.weight") orelse return error.MissingTensor;
     try std.testing.expectEqual(@as(usize, 2), q.rank);
     try std.testing.expectEqual(@as(usize, 16), q.shape[0]);
