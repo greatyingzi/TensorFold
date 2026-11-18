@@ -24,3 +24,18 @@
 - `tools/zig/hy4_synthetic.py`：合成检查点生成器（形状规则与官方 header 对齐）。
 - `zig/src/families/hy_v4_flash/exl3.zig`、`affine4.zig`、`weights.zig`：两条量化 reader。
 - `hy4_assemble.py`、`repair_shard.py`、`verify_assembled.py`（在 `/Users/liheng/work/hy4-quant/`）：Q4 完整包组装/修复/校验。
+
+## 2026-11-19 night: GPU performance campaign + dual-node quantization
+
+### GPU throughput on DGX00 (hy4-gpu-bench, affine4 kernels, Hy4 geometry)
+- experts 41L x 16E x 2P, single launches: 16.91 ms/token = 59.1 tok/s
+- experts grouped (gemvMany x4, 8 launches/layer): **11.05 ms/token = 90.5 tok/s**, 262 GB/s = 96% of HBM peak
+- attn/dense projections (42L x 6P): 11.15 ms/token = 89.7 tok/s, 230 GB/s = 84%
+- MLA attention math (absorb_q<192>, chunks, merge, expand_v<256>, gate; 4K cache): 7.3 ms/token
+- total affine4-5bpw estimate: 29.5 ms = 34 tok/s; at 3bpw projected 48-65 tok/s
+- real-weight numeric witness: layer1 expert0 down_proj GPU vs CPU, worst rel 3.890e-3 = bf16 output precision (0.391%), zero missing rows
+
+### Dual-node quantization (DGX00 head + DGX01 peer over CX7 10.0.1.x)
+- layer 7 (first dual): quantize 500.7 -> 246.3 s = **2.03x**, 528 peer / 506 local tensors, xfer 0.66 GiB/layer
+- layer 8: 574.95 s total vs 833 s single = 1.45x per layer
+- source copy to DGX01: HTTP parallel fetch 1.23 GB/s over CX7 (rsync 191 MB/s); disk-read bound at 660 MB/s
