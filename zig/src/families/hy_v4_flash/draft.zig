@@ -22,6 +22,11 @@ pub fn propose(gpa: std.mem.Allocator, logits: []const f32, count: usize) ![]u32
     return out;
 }
 
+/// Propose candidates with the DFly2 draft block from the target's final hidden state.
+pub fn proposeDfly(gpa: std.mem.Allocator, c: *const @import("config.zig").Config, bag: *const @import("weights.zig").Bag, s: *session_mod.Session, token: usize, out: []u32) !void {
+    try @import("dfly.zig").draft(gpa, c, bag, s.last_hidden, token, s.pos, out);
+}
+
 /// Verify drafts against the target: accept while each draft equals the target's greedy pick.
 
 // `logits` is the target output at the current position; the session advances by accepted tokens.
@@ -66,4 +71,25 @@ fn weights_load(gpa: std.mem.Allocator) !@import("weights.zig").Bag {
 
 fn config_parse(gpa: std.mem.Allocator) !@import("config.zig").Config {
     return @import("config.zig").parse(gpa, @embedFile("config_synthetic_fixture.json"));
+}
+
+
+test "hy4 host: DFly2 drafts verify as the plain continuation" {
+    const gpa = std.testing.allocator;
+    var bag = try weights_load(gpa);
+    defer bag.deinit();
+    const c = try config_parse(gpa);
+    var s = try session_mod.Session.init(gpa, &c, &bag, 4);
+    defer s.deinit();
+    const logits = try s.step(1);
+    const drafts = try gpa.alloc(u32, c.dfly.drafts);
+    defer gpa.free(drafts);
+    try proposeDfly(gpa, &c, &bag, &s, 1, drafts);
+    const n = try verify(&s, logits, drafts);
+    try std.testing.expect(n <= drafts.len);
+    var plain = try session_mod.Session.init(gpa, &c, &bag, 4);
+    defer plain.deinit();
+    _ = try plain.step(1);
+    for (drafts[0..n]) |tok| _ = try plain.step(@intCast(tok));
+    try std.testing.expectEqual(try spec.pick(plain.logits), try spec.pick(s.logits));
 }

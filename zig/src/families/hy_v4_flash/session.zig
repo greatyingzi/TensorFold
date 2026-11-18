@@ -36,6 +36,7 @@ pub const Session = struct {
     streams: [16][]f32 = undefined,
     next: [16][]f32 = undefined,
     logits: []f32,
+    last_hidden: []f32,
     pos: usize = 0,
 
     pub fn init(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weights.Bag, cap: usize) !Session {
@@ -45,8 +46,10 @@ pub const Session = struct {
             .c = c,
             .bag = bag,
             .logits = try gpa.alloc(f32, c.vocab),
+            .last_hidden = try gpa.alloc(f32, c.hidden),
         };
         errdefer gpa.free(self.logits);
+        errdefer gpa.free(self.last_hidden);
         var ok_layers: usize = 0;
         errdefer for (0..ok_layers) |i| self.kv[i].deinit(gpa);
         for (0..c.layers) |i| {
@@ -82,6 +85,7 @@ pub const Session = struct {
             self.gpa.free(self.next[s]);
         }
         self.gpa.free(self.logits);
+        self.gpa.free(self.last_hidden);
         self.* = undefined;
     }
 
@@ -204,6 +208,7 @@ pub const Session = struct {
         const final = try a.alloc(f32, h);
         try ihc.head(gpa, c, self.bag, self.streams[0..hc], final);
         try ops.rmsNorm(final, final, try f32s(self.bag, "norm.weight"), c.eps);
+        @memcpy(self.last_hidden, final);
         try ops.matvec(self.logits, try f32s(self.bag, "lm_head.weight"), final, c.vocab, h);
         self.pos += 1;
         return self.logits;
