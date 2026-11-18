@@ -413,15 +413,15 @@ def shape_for(name, cfg, d):
         if s == "mlp.experts.down_proj":
             return (d["E"], d["LAT"], H)
         if s == "mlp.routed_expert_up_proj.weight":
-            return (d["E"], d["MI"], H)
+            return (H, d["LAT"])
         if s == "mlp.routed_expert_down_proj.weight":
-            return (d["E"], H, d["MI"])
+            return (d["LAT"], H)
         if s == "mlp.shared_experts.gate_proj.weight":
-            return (d["MI"], H)
+            return (d["LAT"], H)
         if s == "mlp.shared_experts.up_proj.weight":
-            return (d["MI"], H)
+            return (d["LAT"], H)
         if s == "mlp.shared_experts.down_proj.weight":
-            return (H, d["MI"])
+            return (H, d["LAT"])
         if s == "mlp.combine_output_norm.weight":
             return (H,)
         if s.startswith("engram_layer."):

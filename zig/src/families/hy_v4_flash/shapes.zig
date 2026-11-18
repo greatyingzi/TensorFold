@@ -107,10 +107,10 @@ pub fn expected(c: *const cfg.Config, name: []const u8, lookup_len: usize) ?Shap
     if (std.mem.eql(u8, s, "mlp.gate.e_score_correction_bias")) return v1(c.experts);
     if (std.mem.eql(u8, s, "mlp.experts.gate_up_proj")) return v3(c.experts, c.hidden, c.latent);
     if (std.mem.eql(u8, s, "mlp.experts.down_proj")) return v3(c.experts, c.latent, c.hidden);
-    if (std.mem.eql(u8, s, "mlp.routed_expert_up_proj.weight")) return v3(c.experts, c.moe_intermediate, c.hidden);
-    if (std.mem.eql(u8, s, "mlp.routed_expert_down_proj.weight")) return v3(c.experts, c.hidden, c.moe_intermediate);
-    if (std.mem.eql(u8, s, "mlp.shared_experts.gate_proj.weight") or std.mem.eql(u8, s, "mlp.shared_experts.up_proj.weight")) return v2(c.moe_intermediate, c.hidden);
-    if (std.mem.eql(u8, s, "mlp.shared_experts.down_proj.weight")) return v2(c.hidden, c.moe_intermediate);
+    if (std.mem.eql(u8, s, "mlp.routed_expert_up_proj.weight")) return v2(c.hidden, c.latent);
+    if (std.mem.eql(u8, s, "mlp.routed_expert_down_proj.weight")) return v2(c.latent, c.hidden);
+    if (std.mem.eql(u8, s, "mlp.shared_experts.gate_proj.weight") or std.mem.eql(u8, s, "mlp.shared_experts.up_proj.weight")) return v2(c.latent, c.hidden);
+    if (std.mem.eql(u8, s, "mlp.shared_experts.down_proj.weight")) return v2(c.hidden, c.latent);
     if (std.mem.eql(u8, s, "mlp.combine_output_norm.weight")) return v1(c.hidden);
 
     if (std.mem.startsWith(u8, s, "engram_layer.")) {
