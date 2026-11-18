@@ -1,4 +1,4 @@
-// ! Hy4 Flash latent-MoE decode on the GPU: what the CPU reference cannot reach. ! ! One decode token touches 41 MoE layers x 16 of 512 experts x two latent projections, ! 4.64 G params of affine-4 weights. This measures those launches on real kernels.
+//! Hy4 Flash projection, expert and MLA timings on the GPU.
 const std = @import("std");
 const cuda = @import("cuda");
 const check = @import("check.zig");

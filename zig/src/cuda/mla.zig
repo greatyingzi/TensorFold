@@ -104,8 +104,7 @@ pub const Mla = struct {
         try launch_.launch(f, .{ .grid = .{ .x = @intCast(heads), .y = @intCast(cols), .z = cdiv(rows, rb) }, .block = .{ .x = 128 } }, s, &a);
     }
 
-    /// The absorb: q_nope the first d of each head's `q_stride` columns, out rows `out_stride` apart per head.
-    /// d = 128 is the Ling/GLM head; 192 is Hy4 Flash's.
+    /// The absorb: q_nope the first d of each head's `q_stride` columns; d is 128 or Hy4's 192.
     pub fn absorbQ(m: *const Mla, s: Stream, q: u64, q_stride: usize, wk: u64, out: u64, out_stride: usize, rows: usize, heads: usize, d: usize, lw: usize) !void {
         if (lw != latent_width or q_stride < d or out_stride < lw) return error.LatentShape;
         if (rows == 0) return;

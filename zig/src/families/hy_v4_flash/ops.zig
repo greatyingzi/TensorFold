@@ -58,8 +58,7 @@ fn workersFor(rows: usize, cols: usize) usize {
     return @max(1, @min(cores, @min(by_work, rows)));
 }
 
-/// Row-major y = W x with BF16 bytes, decoded on the fly (no f32 materialization),
-/// vectorized and spread over the host cores for wide matrices.
+/// Row-major y = W x with BF16 bytes decoded on the fly, vectorized over the host cores.
 pub fn matvecBf16(y: []f32, w: []const u8, x: []const f32, rows: usize, cols: usize) !void {
     if (y.len != rows or w.len < rows * cols * 2 or x.len != cols) return error.BadMatvecShape;
     const n = workersFor(rows, cols);
