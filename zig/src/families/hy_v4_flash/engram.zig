@@ -9,7 +9,7 @@ fn f32s(bag: *const weights.Bag, name: []const u8) ![]const f32 {
     const t = bag.get(name) orelse return error.MissingHy4Tensor;
     return switch (t.value) {
         .f32s => |v| v,
-        .i32s => error.ExpectedF32Tensor,
+        .i32s, .affine4 => error.ExpectedF32Tensor,
     };
 }
 
@@ -17,7 +17,7 @@ fn i32s(bag: *const weights.Bag, name: []const u8) ![]const i32 {
     const t = bag.get(name) orelse return error.MissingHy4Tensor;
     return switch (t.value) {
         .i32s => |v| v,
-        .f32s => error.ExpectedI32Tensor,
+        .f32s, .affine4 => error.ExpectedI32Tensor,
     };
 }
 

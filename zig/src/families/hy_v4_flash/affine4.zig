@@ -12,10 +12,11 @@ pub const suffixes = struct {
 
 fn u16s(bag: *const weights.Bag, name: []const u8, count: usize) ![]const u16 {
     const t = bag.get(name) orelse return error.MissingAffineTensor;
-    const raw = switch (t.value) {
+    const raw = (switch (t.value) {
         .f32s => |v| std.mem.sliceAsBytes(v),
         .i32s => |v| std.mem.sliceAsBytes(v),
-    };
+        .affine4 => error.ExpectedPackedTensor,
+    }) catch |e| return e;
     if (raw.len < count * 2) return error.BadAffineTensor;
     const out = @as([*]const u16, @ptrCast(raw.ptr))[0..count];
     return out;
@@ -23,10 +24,11 @@ fn u16s(bag: *const weights.Bag, name: []const u8, count: usize) ![]const u16 {
 
 fn u32s(bag: *const weights.Bag, name: []const u8, count: usize) ![]const u32 {
     const t = bag.get(name) orelse return error.MissingAffineTensor;
-    const raw = switch (t.value) {
+    const raw = (switch (t.value) {
         .f32s => |v| std.mem.sliceAsBytes(v),
         .i32s => |v| std.mem.sliceAsBytes(v),
-    };
+        .affine4 => error.ExpectedPackedTensor,
+    }) catch |e| return e;
     if (raw.len < count * 4) return error.BadAffineTensor;
     const out = @as([*]const u32, @ptrCast(raw.ptr))[0..count];
     return out;
@@ -49,8 +51,26 @@ pub fn dequantRaw(a: std.mem.Allocator, code_bytes: []const u8, scale_bytes: []c
     for (bi, 0..) |*v, i| v.* = std.mem.readInt(u16, bias_bytes[i * 2 ..][0..2], .little);
     const out = try a.alloc(f32, values);
     errdefer a.free(out);
-    core.dequantize(w, sc, bi, out);
+    try dequantRawInto(out, code_bytes, scale_bytes, bias_bytes, values);
     return out;
+}
+
+/// Decode into a caller-owned buffer, avoiding a per-call allocation.
+pub fn dequantRawInto(out: []f32, code_bytes: []const u8, scale_bytes: []const u8, bias_bytes: []const u8, values: usize) !void {
+    if (out.len != values) return error.BadAffineTensor;
+    const words = values / 8;
+    const groups = values / 64;
+    if (code_bytes.len < words * 4 or scale_bytes.len < groups * 2 or bias_bytes.len < groups * 2) return error.BadAffineTensor;
+    const w = try std.heap.page_allocator.alloc(u32, words);
+    defer std.heap.page_allocator.free(w);
+    const sc = try std.heap.page_allocator.alloc(u16, groups);
+    defer std.heap.page_allocator.free(sc);
+    const bi = try std.heap.page_allocator.alloc(u16, groups);
+    defer std.heap.page_allocator.free(bi);
+    for (w, 0..) |*v, i| v.* = std.mem.readInt(u32, code_bytes[i * 4 ..][0..4], .little);
+    for (sc, 0..) |*v, i| v.* = std.mem.readInt(u16, scale_bytes[i * 2 ..][0..2], .little);
+    for (bi, 0..) |*v, i| v.* = std.mem.readInt(u16, bias_bytes[i * 2 ..][0..2], .little);
+    core.dequantize(w, sc, bi, out);
 }
 
 /// Dequantize one affine4 tensor into f32; `values` is the flattened row-major element count.
@@ -82,7 +102,7 @@ test "hy4 host: affine4 reader dequantizes a flat tensor using core layout" {
     var raw: [64]f32 = undefined;
     for (&raw, 0..) |*v, i| v.* = @floatFromInt(i);
     core.quantize(&raw, &words, &scales, &biases);
-    var bag = weights.Bag{ .arena = std.heap.ArenaAllocator.init(gpa), .map = std.StringHashMap(weights.Tensor).init(gpa) };
+    var bag = weights.Bag{ .arena = std.heap.ArenaAllocator.init(gpa), .io = std.testing.io, .map = std.StringHashMap(weights.Tensor).init(gpa), .files = .empty };
     defer bag.deinit();
     const a = bag.arena.allocator();
     const mk = struct {

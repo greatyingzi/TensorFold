@@ -4,11 +4,35 @@ const config = @import("config.zig");
 const weights = @import("weights.zig");
 const ops = @import("ops.zig");
 
+/// Decode one expert's affine4 matrix into a caller-owned f32 buffer.
+fn expertMatrix(dst: []f32, t: *const weights.Tensor, e: usize) !void {
+    switch (t.value) {
+        .f32s => |v| {
+            if (v.len < (e + 1) * dst.len) return error.BadMoeShape;
+            @memcpy(dst, v[e * dst.len ..][0 .. dst.len]);
+        },
+        .affine4 => |af| {
+            const per = af.values / af.experts;
+            if (per != dst.len or e >= af.experts) return error.BadMoeShape;
+            const code_len = per / 8 * 4;
+            const group_len = per / 64 * 2;
+            try @import("affine4.zig").dequantRawInto(
+                dst,
+                af.codes[e * code_len ..][0..code_len],
+                af.scales[e * group_len ..][0..group_len],
+                af.biases[e * group_len ..][0..group_len],
+                per,
+            );
+        },
+        .i32s => return error.ExpectedF32Tensor,
+    }
+}
+
 fn f32s(bag: *const weights.Bag, name: []const u8) ![]const f32 {
     const t = bag.get(name) orelse return error.MissingHy4Tensor;
     return switch (t.value) {
         .f32s => |v| v,
-        .i32s => error.ExpectedF32Tensor,
+        .i32s, .affine4 => error.ExpectedF32Tensor,
     };
 }
 
@@ -114,10 +138,13 @@ pub fn latentMoe(gpa: std.mem.Allocator, c: *const config.Config, bag: *const we
     defer gpa.free(gu_name);
     const dn_name = try name(gpa, prefix, "experts.down_proj");
     defer gpa.free(dn_name);
-    const gu = try f32s(bag, gu_name);
-    const dn = try f32s(bag, dn_name);
+    const gu_t = bag.get(gu_name) orelse return error.MissingHy4Tensor;
+    const dn_t = bag.get(dn_name) orelse return error.MissingHy4Tensor;
     const gu_rows = 2 * lat;
-    if (gu.len != c.experts * gu_rows * lat or dn.len != c.experts * lat * lat) return error.BadMoeShape;
+    const gu = try gpa.alloc(f32, gu_rows * lat);
+    defer gpa.free(gu);
+    const dn = try gpa.alloc(f32, lat * lat);
+    defer gpa.free(dn);
     const act = try gpa.alloc(f32, gu_rows);
     defer gpa.free(act);
     const expert_out = try gpa.alloc(f32, lat);
@@ -126,9 +153,11 @@ pub fn latentMoe(gpa: std.mem.Allocator, c: *const config.Config, bag: *const we
     defer gpa.free(acc);
     @memset(acc, 0);
     for (r.indices, r.weights) |e, w| {
-        try ops.matvec(act, gu[e * gu_rows * lat ..][0 .. gu_rows * lat], latent_in, gu_rows, lat);
+        try expertMatrix(gu, gu_t, e);
+        try expertMatrix(dn, dn_t, e);
+        try ops.matvec(act, gu, latent_in, gu_rows, lat);
         swiglu(act[0..lat], act[lat..], c.swiglu_limit);
-        try ops.matvec(expert_out, dn[e * lat * lat ..][0 .. lat * lat], act[0..lat], lat, lat);
+        try ops.matvec(expert_out, dn, act[0..lat], lat, lat);
         for (acc, expert_out) |*a, v| a.* += @as(f32, w) * v;
     }
 

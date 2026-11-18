@@ -9,9 +9,19 @@ const loader = @import("loader.zig");
 const affine4 = @import("affine4.zig");
 const exl3 = @import("exl3.zig");
 
+pub const Affine4 = struct {
+    codes: []const u8,
+    scales: []const u8,
+    biases: []const u8,
+    values: usize,
+    experts: usize,
+    rows: usize,
+};
+
 pub const Value = union(enum) {
     f32s: []f32,
     i32s: []i32,
+    affine4: Affine4,
 };
 
 pub const Tensor = struct {
@@ -29,9 +39,13 @@ pub const Tensor = struct {
 
 pub const Bag = struct {
     arena: std.heap.ArenaAllocator,
+    io: std.Io,
     map: std.StringHashMap(Tensor),
+    files: std.ArrayList(safetensors.File),
 
     pub fn deinit(self: *Bag) void {
+        // maps left open until process exit
+        self.files.deinit(self.arena.allocator());
         self.map.deinit();
         self.arena.deinit();
         self.* = undefined;
@@ -84,19 +98,30 @@ fn loadInner(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const l
 
     var out = Bag{
         .arena = std.heap.ArenaAllocator.init(gpa),
+        .io = io,
         .map = std.StringHashMap(Tensor).init(gpa),
+        .files = .empty,
     };
     errdefer out.deinit();
     const a = out.arena.allocator();
     const lookup_len: usize = if (meta.source_tokenizer_len > 0) meta.source_tokenizer_len else c.vocab;
+    var opened = std.StringHashMap(usize).init(a);
     var shard_it = wm.iterator();
     while (shard_it.next()) |entry| {
-        const path = try join(a, dir, entry.value_ptr.string);
-        var sf = safetensors.File.open(a, io, path) catch |e| {
-            if (e == error.FileNotFound) continue;
-            return e;
-        };
-        defer sf.close(io);
+        var sf: *safetensors.File = undefined;
+        if (opened.get(entry.value_ptr.string)) |idx| {
+            sf = &out.files.items[idx];
+        } else {
+            const path = try join(a, dir, entry.value_ptr.string);
+            const file = safetensors.File.open(a, io, path) catch |e| {
+                if (e == error.FileNotFound) continue;
+                return e;
+            };
+            const idx = out.files.items.len;
+            try out.files.append(a, file);
+            try opened.put(entry.value_ptr.string, idx);
+            sf = &out.files.items[idx];
+        }
         var it = wm.iterator();
         while (it.next()) |item| {
             if (!std.mem.eql(u8, item.value_ptr.string, entry.value_ptr.string)) continue;
@@ -147,9 +172,10 @@ fn loadInner(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const l
                     var vals: usize = want.a;
                     if (want.rank > 1) vals *= want.b;
                     if (want.rank > 2) vals *= want.c;
-                    const buf = try affine4.dequantRaw(a, qt.bytes, st.bytes, bt.bytes, vals);
+                    const experts: usize = if (want.rank == 3) want.a else 1;
+                    const rows: usize = if (want.rank == 3) want.b else 1;
                     const qkey = try names.rename(a, base);
-                    try out.map.put(qkey, .{ .name = qkey, .rank = want.rank, .shape = .{ want.a, want.b, want.c }, .value = .{ .f32s = buf } });
+                    try out.map.put(qkey, .{ .name = qkey, .rank = want.rank, .shape = .{ want.a, want.b, want.c }, .value = .{ .affine4 = .{ .codes = qt.bytes, .scales = st.bytes, .biases = bt.bytes, .values = vals, .experts = experts, .rows = rows } } });
                     continue;
                 }
             }
