@@ -1,6 +1,6 @@
 # Hy4 Flash 量化方案（4-bit + Q8 Engram）
 
-状态：方案已定，代码未实现。本文件是 P2 的合约。
+状态：档位已按实测调整（exllamav3 不支持 hy_v4_flash），Zig 侧 affine4 reader 已实现；PTQ 脚本由量化子任务在 `/Users/liheng/work/hy4-quant/` 实现中。
 
 ## 1. 源与档位
 
@@ -12,7 +12,7 @@
 
 | 张量族 | 目标 | 理由 |
 | --- | --- | --- |
-| 路由专家 `mlp.experts.gate_up_proj` / `down_proj` | EXL3 K4（trellis/suh/svh，复用 `zig/src/core/exl3_layout.zig`） | 占权重绝大部分；已有布局与 kernel 基础设施 |
+| 路由专家 `mlp.experts.gate_up_proj` / `down_proj` | **affine 4-bit / group 64**（u32 codes + bf16 scale/bias，复用 `zig/src/core/affine4_host.zig`） | exllamav3 v1.6.0/上游 v1.6.7 均不支持 hy_v4_flash；affine4 是我们引擎已有 reader/kernel 的最短路径 |
 | attention 投影、router、shared expert、norm、sink、hc_* | 多精度 core view：original BF16 / K8 / K6 三选一，加载时按设备内存选择 | 小矩阵对 4-bit 敏感；参考社区 MC（Multi-Core）检查点思路 |
 | Engram `multi_head_embedding.embedding.weight`（4 层，BF16 `[~165M,96]`/层，共约 127 GB） | 一次性压到 FP8/E4M3 + 每行 F32 scale；保留 `engram_fp8_embedding` 语义 | 不压则总权重约 205 GB，双 Spark 贴线 |
 | Engram 其余小投影/norm、lm_head、embed_tokens | BF16 | 体积占比小，保真优先 |
