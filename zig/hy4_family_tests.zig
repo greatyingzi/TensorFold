@@ -19,4 +19,5 @@ test "hy4 host: imports" {
     _ = @import("src/families/hy_v4_flash/rotary.zig");
     _ = @import("src/families/hy_v4_flash/full_forward.zig");
     _ = @import("src/families/hy_v4_flash/attention.zig");
+    _ = @import("src/families/hy_v4_flash/session.zig");
 }
