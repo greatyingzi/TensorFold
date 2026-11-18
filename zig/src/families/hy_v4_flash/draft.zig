@@ -1,4 +1,6 @@
-//! Draft proposal and verification over the target session, ahead of the DFly2 weight path.
+//! Draft proposal and verification over the target session.
+
+// The DFly2 weight path is the next seam.
 const std = @import("std");
 const spec = @import("spec.zig");
 const session_mod = @import("session.zig");
