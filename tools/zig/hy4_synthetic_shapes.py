@@ -427,9 +427,9 @@ def shape_for(name, cfg, d):
         if s.startswith("engram_layer."):
             head = d["ENG_EMBED"] // d["ENG_HEADS"]
             if s == "engram_layer.lookup_table":
-                return (engram_bucket_total(cfg, li), d["ENG_EMBED"])
+                return (d["V"],)
             if s == "engram_layer.multi_head_embedding.embedding.weight":
-                return (sum(cfg["text_config"]["engram_vocab_size"]), d["ENG_EMBED"])
+                return (engram_bucket_total(cfg, li), d["ENG_EMBED"] // d["ENG_HEADS"])
             if s == "engram_layer.value_proj.weight":
                 return (H, d["ENG_EMBED"])
             if s == "engram_layer.value_proj.bias":
@@ -524,10 +524,10 @@ def write_shard(path, tensors, metadata=None):
         header["__metadata__"] = {str(k): str(v) for k, v in metadata.items()}
     blobs = []
     offset = 0
-    for name, (shape, arr) in tensors.items():
+    for name, (shape, arr, dtype) in tensors.items():
         raw = arr.tobytes(order="C")
         header[name] = {
-            "dtype": "BF16",
+            "dtype": dtype,
             "shape": [int(x) for x in shape],
             "data_offsets": [offset, offset + len(raw)],
         }

@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | 路由专家 `mlp.experts.gate_up_proj` / `down_proj` | EXL3 K4（trellis/suh/svh，复用 `zig/src/core/exl3_layout.zig`） | 占权重绝大部分；已有布局与 kernel 基础设施 |
 | attention 投影、router、shared expert、norm、sink、hc_* | 多精度 core view：original BF16 / K8 / K6 三选一，加载时按设备内存选择 | 小矩阵对 4-bit 敏感；参考社区 MC（Multi-Core）检查点思路 |
-| Engram `lookup_table`（4 层，BF16 约 127 GB） | 一次性压到 FP8/E4M3 + 每行 F32 scale；保留 `engram_fp8_embedding` 语义 | 不压则总权重约 205 GB，双 Spark 贴线 |
+| Engram `multi_head_embedding.embedding.weight`（4 层，BF16 `[~165M,96]`/层，共约 127 GB） | 一次性压到 FP8/E4M3 + 每行 F32 scale；保留 `engram_fp8_embedding` 语义 | 不压则总权重约 205 GB，双 Spark 贴线 |
 | Engram 其余小投影/norm、lm_head、embed_tokens | BF16 | 体积占比小，保真优先 |
 
 名字沿用官方 checkpoint，不另造一套；档位由 `quantization_config` 与 safetensors header 元数据声明。
@@ -39,5 +39,5 @@
 
 - `tools/zig/hy4_synthetic.py`：生成小尺寸同构检查点，供 loader/前向单测使用，不依赖 440 GB 权重。
 - `tools/zig/hy4_ptq.py`（待写）：从 BF16 源生成 K4 专家 + FP8 Engram 的检查点，并输出按张量的量化误差报告。
-- Engram token map：从 `tokenizer.json` 按官方 `normalizer_signature`（nfkc-nfd-stripaccents-lower-ws-strip-addedbypass-v2）生成，用 header 里的 `lookup_sha256` 校验；不要依赖不存在的 `engram_vocab_map.npz`。
+- Engram token map 已在 checkpoint 里：`engram_layer.lookup_table` 是 I32 [120818] 的映射表（每层一份）；safetensors header 的 `engram_vocab_map_metadata` 带 `lookup_sha256` 可用于校验来源，不需要外部 npz 或从 tokenizer 重建。
 - 哈希乘子：用 NumPy PCG64 复现（见 `engram_rng.zig`），layer_id 为 1-based，seed 0。

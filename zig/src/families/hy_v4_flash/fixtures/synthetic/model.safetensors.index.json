@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "total_size": 5223130
+    "total_size": 1592154
   },
   "weight_map": {
     "lm_head.weight": "model-00001-of-00004.safetensors",

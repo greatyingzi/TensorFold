@@ -4,6 +4,7 @@ const safetensors = @import("../../core/safetensors.zig");
 const config = @import("config.zig");
 const graph = @import("graph.zig");
 const names = @import("tensor_names.zig");
+const shapes = @import("shapes.zig");
 
 pub const EngramMeta = struct {
     source_tokenizer_len: u32 = 0,
@@ -18,6 +19,7 @@ pub const Admission = struct {
     shards: usize = 0,
     total_bytes: u64 = 0,
     meta: EngramMeta = .{},
+    shaped: usize = 0,
 };
 
 fn join(gpa: std.mem.Allocator, dir: []const u8, file: []const u8) ![]u8 {
@@ -117,8 +119,13 @@ pub fn inspect(gpa: std.mem.Allocator, io: std.Io, dir: []const u8) !Admission {
         while (it.next()) |item| {
             if (!std.mem.eql(u8, item.value_ptr.string, entry.key_ptr.*)) continue;
             const tensor = sf.get(item.key_ptr.*) orelse return error.IndexedTensorMissing;
-            if (tensor.dtype != .bf16) return error.UnsupportedHy4TensorDtype;
             if (tensor.numel() * @as(usize, tensor.dtype.size()) != tensor.bytes.len) return error.BadSafetensors;
+            const lookup_len: usize = if (out.meta.source_tokenizer_len > 0) out.meta.source_tokenizer_len else c.vocab;
+            if (shapes.expected(&c, item.key_ptr.*, lookup_len)) |want_shape| {
+                if (tensor.dtype != want_shape.dtype) return error.UnsupportedHy4TensorDtype;
+                if (!want_shape.is(tensor.rank, tensor.shape[0..tensor.rank])) return error.Hy4TensorShapeMismatch;
+                out.shaped += 1;
+            } else if (tensor.dtype != .bf16) return error.UnsupportedHy4TensorDtype;
             const engine = try names.rename(a, item.key_ptr.*);
             const got = try seen.getOrPut(engine);
             if (got.found_existing) return error.DuplicateHy4Tensor;
@@ -133,9 +140,10 @@ test "hy4 host: the synthetic checkpoint is admitted with all tensors and metada
     const a = try inspect(std.testing.allocator, std.testing.io, "zig/src/families/hy_v4_flash/fixtures/synthetic");
     try std.testing.expectEqual(@as(usize, 245), a.tensors);
     try std.testing.expectEqual(@as(usize, 4), a.shards);
-    try std.testing.expect(a.total_bytes > 5_000_000);
+    try std.testing.expect(a.total_bytes > 1_000_000);
     try std.testing.expect(a.meta.source_tokenizer_len > 0);
     try std.testing.expect(a.meta.compressed_vocab_size > 0);
+    try std.testing.expect(a.shaped >= 169);
 }
 
 test "hy4 host: a missing checkpoint directory is refused" {

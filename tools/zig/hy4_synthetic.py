@@ -29,8 +29,13 @@ def generate(a):
     total_bytes = 0
     for name in names:
         shape = shape_for(name, cfg, d)
-        arr = value_for(name, shape)
-        tensors[name] = (shape, arr)
+        if name.endswith("engram_layer.lookup_table"):
+            arr = np.arange(shape[0], dtype=np.int32)
+            dtype = "I32"
+        else:
+            arr = value_for(name, shape)
+            dtype = "BF16"
+        tensors[name] = (shape, arr, dtype)
         total_bytes += arr.nbytes
 
     out = Path(a.out)
@@ -255,15 +260,16 @@ def verify(directory):
             raise SystemExit("duplicate tensor across shards: %s" % name)
         seen.add(name)
         meta = hdr[name]
-        if meta.get("dtype") != "BF16":
-            raise SystemExit("%s: dtype %s is not BF16" % (name, meta.get("dtype")))
+        want_dtype = "I32" if name.endswith("engram_layer.lookup_table") else "BF16"
+        if meta.get("dtype") != want_dtype:
+            raise SystemExit("%s: dtype %s is not %s" % (name, meta.get("dtype"), want_dtype))
         shape = tuple(meta.get("shape", []))
         exp_shape = tuple(shape_for(name, cfg, d))
         if shape != exp_shape:
             raise SystemExit("%s: shape %s != config-derived %s" % (name, shape, exp_shape))
         a_off, b_off = meta.get("data_offsets")
         total_bytes += int(b_off) - int(a_off)
-    print("[verify] all %d tensors are BF16 with config-consistent shapes" % len(names))
+    print("[verify] all %d tensors have config-consistent dtype and shape" % len(names))
 
     declared = index["metadata"].get("total_size")
     if declared != total_bytes:
