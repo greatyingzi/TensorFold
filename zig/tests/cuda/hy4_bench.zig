@@ -311,6 +311,81 @@ pub fn exl3Real(gpu: Gpu, dir: []const u8, proj: []const u8) !void {
     std.debug.print("exl3real numerics: finite {d}/{d} worst_vs_deq {e:.3} worst_vs_bf16 {e:.3}\n", .{ finite, n, worst_q, worst_b });
 }
 
+
+/// Time every dense EXL3 projection of one real layer from the pack.
+pub fn exl3Layer(gpu: Gpu, dir: []const u8, layer: usize) !void {
+    var arena: std.heap.ArenaAllocator = .init(gpu.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = gpu.io;
+    const sf = @import("core").safetensors;
+    const P = struct { name: []const u8, k: usize, n: usize };
+    const list = [_]P{
+        .{ .name = "self_attn.q_a_proj", .k = 3072, .n = 1024 },
+        .{ .name = "self_attn.q_b_proj", .k = 1024, .n = 8192 },
+        .{ .name = "self_attn.kv_a_proj_with_mqa", .k = 3072, .n = 576 },
+        .{ .name = "self_attn.kv_b_proj", .k = 512, .n = 14336 },
+        .{ .name = "self_attn.o_proj", .k = 8192, .n = 3072 },
+        .{ .name = "mlp.shared_experts.up_proj", .k = 3072, .n = 1536 },
+        .{ .name = "mlp.shared_experts.gate_proj", .k = 3072, .n = 1536 },
+        .{ .name = "mlp.shared_experts.down_proj", .k = 1536, .n = 3072 },
+        .{ .name = "mlp.routed_expert_down_proj", .k = 3072, .n = 1536 },
+        .{ .name = "mlp.routed_expert_up_proj", .k = 1536, .n = 3072 },
+    };
+    const idx_path = try std.fs.path.join(a, &.{ dir, "model.safetensors.index.json" });
+    const idx_text = try std.Io.Dir.cwd().readFileAlloc(io, idx_path, a, .limited(64 << 20));
+    var doc = try std.json.parseFromSlice(std.json.Value, a, idx_text, .{});
+    const wm = doc.value.object.get("weight_map").?.object;
+    var s = try cuda.Stream.init(gpu.d, false);
+    defer s.deinit();
+    var dense = try cuda.exl3.Dense.load(gpu.d);
+    defer dense.unload();
+    var total_ms: f32 = 0;
+    for (list) |p| {
+        if (p.n % 128 != 0) {
+            std.debug.print("  {s}: skipped (n={d} not a multiple of 128)\n", .{ p.name, p.n });
+            continue;
+        }
+        const proj = try std.fmt.allocPrint(a, "model.layers.{d}.{s}", .{ layer, p.name });
+        const tr_name = try std.fmt.allocPrint(a, "{s}.trellis", .{proj});
+        const shard = wm.get(tr_name) orelse return error.MissingExl3Tensor;
+        const path = try std.fs.path.join(a, &.{ dir, shard.string });
+        var file = try sf.File.open(a, io, path);
+        const tr = file.get(tr_name) orelse return error.MissingExl3Tensor;
+        const su = file.get(try std.fmt.allocPrint(a, "{s}.suh", .{proj})) orelse return error.MissingExl3Tensor;
+        const sv = file.get(try std.fmt.allocPrint(a, "{s}.svh", .{proj})) orelse return error.MissingExl3Tensor;
+        const cb: cuda.exl3.Codebook = if (file.get(try std.fmt.allocPrint(a, "{s}.mcg", .{proj})) != null) .mcg else .mul1;
+        const halves: u32 = @intCast(tr.shape[2] / 8);
+        const st = cuda.exl3.strides(p.k, p.n, halves, false);
+        var up = cuda.exl3_upload.Uploader{ .d = gpu.d, .gpa = a, .max_buffers = 64 };
+        const w: cuda.exl3.Weight = .{
+            .trellis = try up.dev(tr.bytes), .suh = try up.dev(su.bytes), .svh = try up.dev(sv.bytes),
+            .k = @intCast(p.k), .n = @intCast(p.n), .halves = halves, .codebook = cb,
+            .stride_k = st.k, .stride_nb = st.nb,
+        };
+        const rows: usize = 1;
+        const xh = try a.alloc(u16, rows * p.k);
+        @memset(xh, 0x3c00);
+        const x = try up.dev(std.mem.sliceAsBytes(xh));
+        const y = try up.dev(try a.alloc(u8, rows * p.n * 2));
+        try dense.reserve(s, w);
+        for (0..3) |_| try dense.decode(s, w, x, .f16, rows, y, .f16);
+        try s.synchronize();
+        var p0 = try cuda.Event.init(gpu.d, true);
+        defer p0.deinit();
+        var p1 = try cuda.Event.init(gpu.d, true);
+        defer p1.deinit();
+        try p0.record(s);
+        for (0..20) |_| try dense.decode(s, w, x, .f16, rows, y, .f16);
+        try p1.record(s);
+        try p1.synchronize();
+        const ms = try cuda.Event.elapsedMs(p0, p1) / 20.0;
+        total_ms += ms;
+        std.debug.print("  {s}: {d:.4} ms\n", .{ proj, ms });
+    }
+    std.debug.print("exl3layer {d}: {d:.3} ms/token dense only  {d:.1} tok/s  ({d} real 3bpw projections)\n", .{ layer, total_ms, 1000.0 / total_ms, list.len });
+}
+
 fn bfOfHost(bits: u16) f32 {
     return @bitCast(@as(u32, bits) << 16);
 }
