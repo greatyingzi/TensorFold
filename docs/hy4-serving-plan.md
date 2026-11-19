@@ -30,6 +30,12 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 30 (A/B ground truth established)
+- CPU reference forward on the ORIGINAL BF16 pack (token 0, 42 layers, mmap lazy decode): **NEXT=7**, 57.9 s for 2 tokens, RC=0. Correctness target for the GPU path.
+- GPU step on the EXL3 pack with the same input gives 87033 (CLI) — a large divergence, independent of the MoE wiring (a 3-layer run already diverges).
+- Rope theta fixed per layer type (DSA 1e7 / sliding 1e4, from rope_parameters); SwiGLU clamp (limit 10) added for shared experts and L0 dense via tf_hy4_swiglu_limit; output changed but still gibberish (~11 tok/s, no NaN).
+- Next: per-layer dump diff CPU vs GPU. The CPU session already has dump hooks; add the matching dump to the GPU CLI, run both with token 0, compare layer by layer.
+
 ## Progress round 28 (SERVE STABLE END-TO-END)
 - The serve path now completes requests with all 42 layers (64-head sliding layers included), zero NaN, no crashes: 12-token completion at 14.65 tok/s, TTFT 0.37 s, greedy.
 - Root cause of the last `Invalid`: merge downloads requested the max-heads host array against a per-layer-heads device view (65,536 vs 131,072 bytes); clipped to `nout = rows*heads*kv_lora`.
