@@ -203,6 +203,15 @@ pub fn main(init: std.process.Init) !void {
         const L = p.w[li];
         const heads = L.heads;
         try ihc.collapse(s, streams, p.attn_fn[li], p.attn_base[li], p.attn_scale[li], mixed, rows, H, HC, p.cfg.hc_eps, p.cfg.hc_magnitude, false);
+        {
+            const mh = try a.alloc(u16, 8);
+            defer a.free(mh);
+            var mb = cuda.memory.DeviceBuffer{ .d = &driver, .ptr = mixed, .len = 16 };
+            try mb.download(0, std.mem.sliceAsBytes(mh[0..8]));
+            std.debug.print("GPUDUMP L{d} mixed", .{li});
+            for (mh) |v| std.debug.print(" {d}", .{@as(f32, @bitCast(@as(u32, v) << 16))});
+            std.debug.print("\n", .{});
+        }
         if (li == 0) std.debug.print("step pre norms1\n", .{});
         try norms.rms(s, mixed, .bf16, p.input_norm[li], xbuf, .bf16, rows, H, p.cfg.eps);
         if (li == 0) std.debug.print("step pre qa\n", .{});
