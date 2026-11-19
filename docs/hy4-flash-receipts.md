@@ -39,3 +39,15 @@
 - layer 7 (first dual): quantize 500.7 -> 246.3 s = **2.03x**, 528 peer / 506 local tensors, xfer 0.66 GiB/layer
 - layer 8: 574.95 s total vs 833 s single = 1.45x per layer
 - source copy to DGX01: HTTP parallel fetch 1.23 GB/s over CX7 (rsync 191 MB/s); disk-read bound at 660 MB/s
+### DFly2 draft correctness (2026-11-19 noon)
+
+- The checkpoint contains more than the 87 per-layer dfly tensors: `final_norm`, `hidden_correction.{embed_norm,hidden_norm,gate_proj,up_proj,down_proj}`, `mtp_fusion.{enorm,hnorm,eh_proj,gate}`, `confidence_head`. The first drafter ignored all of them and wrongly used the target model's `norm.weight`, which made its hidden nearly orthogonal to the target (cos 0.06, top-10 overlap 0/10).
+- Wired the full draft route: hidden_correction (SwiGLU on concat(norm(embed), norm(target hidden))) -> 5 gated MLA draft layers -> mtp_fusion (enorm/hnorm + eh_proj + gate) -> dfly final_norm -> shared lm_head.
+- Native DGX00 probe with the corrected binary, seed 120000: `sum_chain` agreement 2/5 = 40% (was 0% with the stale binary that lacked these modules), `target_only` 0%. The official-style MTP recipe in the repo's ling oracle confirms enorm/hnorm -> concat -> eh_proj -> draft block -> final_norm. sum_chain is the融合变体 to use in the spec-decode ring.
+- The spec-decode loop is wired into `hy4-runner ... spec TOKEN STEPS` via `draft.proposeDfly` + `draft.verify`; synthetic fixture smoke 2/2 accepted.
+
+### EXL3 3.0bpw quantization (2026-11-19 12:33)
+
+- `-- All done` + `CONVERT_EXIT:0`; 42 layers, per-layer bpw ~3.02, sqnr ~16.7; 8 shards written into `NewModels/Hy4-flash-EXL3` (~59 GB before graft).
+- `post_quant.sh` chain is running: graft BF16 extras (dfly/vit/hc_head and every non-routed tensor) into the pack, then `verify_grafted.py` structural check.
+
