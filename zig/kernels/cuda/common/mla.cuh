@@ -253,6 +253,40 @@ __device__ __forceinline__ void merge_part(const float* po, const float* pm, con
   }
 }
 
+
+__device__ __forceinline__ void merge_part_sink(const float* po, const float* pm, const float* pl, float* qo, float* qm,
+                                                float* ql, int64_t rows, int64_t heads, int nch, const float* sinks) {
+  constexpr int LW = glm_attn::LW;
+  const int64_t r = blockIdx.x, h = blockIdx.y;
+  const int k0 = threadIdx.x * 4;
+  float m = -INFINITY, l = 0.0f, o[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  for (int c = 0; c < nch; ++c) {
+    const int64_t base = (c * rows + r) * heads + h;
+    const float cm = pm[base], cl = pl[base];
+    const bool active = cl > 0.0f;
+    const float nm = active ? fmaxf(m, cm) : m;
+    const float b = active ? glm_triton::exp_approx(cm - nm) : 0.0f;
+    if (c == 0) {
+      for (int j = 0; j < 4; ++j) o[j] = __fmaf_rn(b, po[base * LW + k0 + j], 0.0f);
+      l = __fmaf_rn(b, cl, 0.0f);
+    } else {
+      const float a = active ? (m == -INFINITY ? 0.0f : glm_triton::exp_approx(m - nm)) : 1.0f;
+      for (int j = 0; j < 4; ++j) o[j] = __fmaf_rn(o[j], a, __fmul_rn(b, po[base * LW + k0 + j]));
+      l = __fmaf_rn(l, a, __fmul_rn(b, cl));
+    }
+    m = nm;
+  }
+  const float sm = fmaxf(m, sinks[h]);
+  const float resc = (m == -INFINITY) ? 0.0f : glm_triton::exp_approx(m - sm);
+  const float sink_e = glm_triton::exp_approx(sinks[h] - sm);
+  for (int j = 0; j < 4; ++j) qo[(r * heads + h) * LW + k0 + j] = o[j] * resc;
+  if (threadIdx.x == 0) {
+    qm[r * heads + h] = sm;
+    ql[r * heads + h] = __fmaf_rn(l, resc, sink_e);
+  }
+}
+
+
 // tf_glm_absorb_q's arithmetic at D-wide q_nope: q rows qs apart a head, qa rows qaw apart (the roped columns after).
 template <int D>
 __device__ __forceinline__ void absorb_q(const __nv_bfloat16* q, const __nv_bfloat16* wk, __nv_bfloat16* qa,

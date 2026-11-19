@@ -17,6 +17,10 @@ pub fn main(init: std.process.Init) !u8 {
             try hy4_bench.forwardBench(gpu);
             return 0;
         }
+        if (std.mem.eql(u8, args[1], "realforward")) {
+            try hy4_bench.realForward(gpu, args[2]);
+            return 0;
+        }
         try hy4_weights_check.run(gpu, args[1]);
         return 0;
     }

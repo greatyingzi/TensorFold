@@ -181,6 +181,36 @@ fn bfOfHost(bits: u16) f32 {
     return @bitCast(@as(u32, bits) << 16);
 }
 
+
+/// The real Q4 pack through the full GPU step: load every layer's affine4 tensors,
+/// pack them into the tiled layout, run the assembled forward and argmax.
+pub fn realForward(gpu: Gpu, dir: []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(gpu.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var s = try cuda.Stream.init(gpu.d, false);
+    defer s.deinit();
+    const kk = cuda.kernels;
+    const images = [_][]const u8{ kk.qmm_group, kk.qmm_prefill, kk.lane_gemv, kk.affine4_pack };
+    var mods: [images.len]cuda.Module = undefined;
+    var loaded: usize = 0;
+    defer for (mods[0..loaded]) |*md| md.unload();
+    for (images, &mods) |img, *md| {
+        md.* = try cuda.Module.load(gpu.d, img);
+        loaded += 1;
+    }
+    const sms: usize = @intCast(try gpu.ctx.attribute(.multiprocessor_count));
+    var a4 = try qlinear.Affine4Kernels.resolve(gpu.d, mods[0], mods[1], mods[2], mods[3], sms, true);
+    defer a4.deinit();
+    var mla = try cuda.mla.Mla.load(gpu.d);
+    defer mla.unload();
+
+    _ = dir;
+    _ = a;
+    _ = s;
+    std.debug.print("realforward: pack loading not yet wired\n", .{});
+}
+
 fn timeIt(gpu: Gpu, a4: *const qlinear.Affine4Kernels, s: cuda.Stream, ps: []const Proj, rows: usize, reps: usize) !f32 {
     var t0 = try cuda.Event.init(gpu.d, true);
     defer t0.deinit();
