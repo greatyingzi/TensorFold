@@ -232,7 +232,12 @@ pub const Session = struct {
                 defer if (selected) |s| self.recall[li].deinitResult(s);
             }
             const ctx = try a.alloc(f32, heads * vdim);
-            try self.kv[li].attend(gpa, plan.kind, c.window, selected, c.index_ratio, q_nope, q_rope, ctx);
+            const sinkn = try named(a, "layers.{d}.self_attn.sinks", .{li});
+            const sinks: ?[]const f32 = if (self.bag.get(sinkn)) |t| switch (t.value) {
+                .f32s => |v| v,
+                else => null,
+            } else null;
+            try self.kv[li].attendSink(gpa, plan.kind, c.window, selected, c.index_ratio, q_nope, q_rope, ctx, sinks);
             const on = try named(a, "layers.{d}.self_attn.o_proj.weight", .{li});
             try matvecW(ffn, self.bag, on, ctx, h, heads * vdim);
             for (0..hc) |s| {

@@ -57,6 +57,11 @@ pub const LayerKv = struct {
 
     /// Attend the last appended token against all allowed positions and write [heads, vdim].
     pub fn attend(self: *const LayerKv, gpa: std.mem.Allocator, kind: config.Kind, window: usize, selected: ?[]const usize, ratio: usize, q_nope: []const f32, q_rope: []const f32, out: []f32) !void {
+        return self.attendSink(gpa, kind, window, selected, ratio, q_nope, q_rope, out, null);
+    }
+
+    /// attend with Hy4's learned sink: an extra softmax column carrying no value.
+    pub fn attendSink(self: *const LayerKv, gpa: std.mem.Allocator, kind: config.Kind, window: usize, selected: ?[]const usize, ratio: usize, q_nope: []const f32, q_rope: []const f32, out: []f32, sinks: ?[]const f32) !void {
         if (self.tokens == 0) return error.EmptyAttentionCache;
         if (q_nope.len != self.heads * self.nope or q_rope.len != self.heads * self.rope or out.len != self.heads * self.vdim) return error.BadAttentionShape;
         const scores = try gpa.alloc(f32, self.tokens);
@@ -83,6 +88,17 @@ pub const LayerKv = struct {
             var total: f64 = 0;
             for (scores) |s| {
                 if (std.math.isFinite(s)) total += @exp(@as(f64, s) - best);
+            }
+            var sink_e: f64 = 0;
+            if (sinks) |sk| {
+                if (sk.len != self.heads) return error.BadAttentionShape;
+                if (sk[h] > best) {
+                    const re = @exp(best - @as(f64, sk[h]));
+                    total *= re;
+                    sink_e = 1;
+                    best = sk[h];
+                } else sink_e = @exp(@as(f64, sk[h]) - best);
+                total += sink_e;
             }
             for (0..self.tokens) |t| {
                 if (!std.math.isFinite(scores[t])) continue;
