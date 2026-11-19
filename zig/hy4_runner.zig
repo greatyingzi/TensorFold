@@ -138,6 +138,37 @@ fn probe(a: std.mem.Allocator, io: std.Io, dir: []const u8, seed: usize, steps: 
     std.debug.print("PROBE RESULT steps {d} agree_sum {d} ({d}%) agree_target {d} ({d}%) ns {d}\n", .{ steps, agree_sum, agree_sum * 100 / steps, agree_tgt, agree_tgt * 100 / steps, ns });
 }
 
+
+fn dumpRef(a: std.mem.Allocator, io: std.Io, dir: []const u8, token: usize) !void {
+    const adm = try loader.inspect(a, io, dir);
+    const meta = adm.meta;
+    var c = try config.read(a, io, dir);
+    c.engram.count = 0;
+    c.allow_no_engram = true;
+    var bag = try weights.loadStreaming(a, io, dir, &meta, 0);
+    defer bag.deinit();
+    const h = c.hidden;
+    var s = try session.Session.init(a, &c, &bag, 4);
+    defer s.deinit();
+    const ndump = @min(c.layers, 42);
+    for (0..ndump) |i| {
+        s.dump_buf[i] = try a.alloc(f32, h);
+        s.dump_layers[i] = @intCast(i);
+    }
+    s.dump_n = ndump;
+    const logits = try s.step(token);
+    var best: usize = 0;
+    for (logits, 0..) |v, i| {
+        if (v > logits[best]) best = i;
+    }
+    for (0..ndump) |i| {
+        std.debug.print("CPUDUMP L{d} mixed", .{i});
+        for (s.dump_buf[i][0..8]) |v| std.debug.print(" {d}", .{v});
+        std.debug.print("\n", .{});
+    }
+    std.debug.print("CPUDUMP NEXT {d}\n", .{best});
+}
+
 fn headVec(y: []f32, bag: *const @import("src/families/hy_v4_flash/weights.zig").Bag, x: []f32, rows: usize, cols: usize, eps: f32) !void {
     _ = eps;
     const t = bag.get("lm_head.weight") orelse return error.MissingHy4Tensor;
@@ -201,6 +232,11 @@ pub fn main(init: std.process.Init) !void {
         try specDecode(a, io, dir, seed, steps);
         return;
     }
+    if (std.mem.eql(u8, token_s, "dumpref")) {
+        const tok = try std.fmt.parseInt(usize, layers_s, 10);
+        try dumpRef(a, io, dir, tok);
+        return;
+    }
     if (std.mem.eql(u8, token_s, "probe")) {
         const seed = try std.fmt.parseInt(usize, layers_s, 10);
         const steps = try std.fmt.parseInt(usize, it.next() orelse return error.BadArgs, 10);
@@ -245,5 +281,13 @@ pub fn main(init: std.process.Init) !void {
     var last: u32 = 0;
     for (0..count) |i| last = try spec.pick(try s.step(token + i % c.vocab));
     const ns: i64 = nowNs() - t0;
+    {
+        const nd = @min(c.layers, s.dump_n);
+        for (0..nd) |i| {
+            std.debug.print("CPUDUMP L{d} mixed", .{i});
+            for (s.dump_buf[i][0..8]) |v| std.debug.print(" {d}", .{v});
+            std.debug.print("\n", .{});
+        }
+    }
     std.debug.print("LOADED {d} tensors, LAYERS {d}, TOKENS {d}, FORWARD_NS {d}, TOK_PER_S {d}, NEXT {d}\n", .{ bag.count(), c.layers, count, ns, if (ns > 0) @divTrunc(@as(i64, @intCast(count)) * @as(i64, std.time.ns_per_s), ns) else 0, last });
 }

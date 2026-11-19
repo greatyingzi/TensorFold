@@ -52,10 +52,10 @@ pub const Session = struct {
     last_hidden: []f32,
     pos: usize = 0,
     /// Optional per-step capture of the collapsed hidden entering these layers (the dfly targets).
-    dump_layers: [8]u32 = @splat(0),
+    dump_layers: [42]u32 = @splat(0),
     dump_n: usize = 0,
-    dump_buf: [8][]f32 = @splat(&.{}),
-    dump_hit: [8]bool = @splat(false),
+    dump_buf: [42][]f32 = @splat(&.{}),
+    dump_hit: [42]bool = @splat(false),
 
     pub fn init(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weights.Bag, cap: usize) !Session {
         try graph.validate(c);

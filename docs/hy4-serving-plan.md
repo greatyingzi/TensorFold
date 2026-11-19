@@ -30,6 +30,11 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 31 (A/B localizes the divergence)
+- CPU dumpref mode (real weights, full 42-layer dump): **NEXT=68** for token 0 — the earlier NEXT=7 came from the smoke path's synthetic vocab and is void.
+- Per-layer mixed dump comparison: **L0 exact match** (bf16 rounding), **L1 ~3% drift** (quantization noise scale), **L2 structural divergence**: CPU mixed jumps 20x over L1 (0.22/-0.23/0.70) while GPU stays at L1's scale (0.014). L2's input is L1's FFN output and L1 is the first routed-MoE layer — the GPU's routed-expert contribution is effectively zero while the CPU's is strong (routed_scale=3.998).
+- Next: instrument the GPU MoE block (routed_down → ex.run → routed_up) at L1 — print expert_out and routed_out magnitudes, and verify pick/wts layout (int32 [rows][16] picks, fp16 wts) against the kernel's expectations.
+
 ## Progress round 30 (A/B ground truth established)
 - CPU reference forward on the ORIGINAL BF16 pack (token 0, 42 layers, mmap lazy decode): **NEXT=7**, 57.9 s for 2 tokens, RC=0. Correctness target for the GPU path.
 - GPU step on the EXL3 pack with the same input gives 87033 (CLI) — a large divergence, independent of the MoE wiring (a 3-layer run already diverges).
