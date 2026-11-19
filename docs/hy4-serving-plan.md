@@ -30,6 +30,11 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 28 (SERVE STABLE END-TO-END)
+- The serve path now completes requests with all 42 layers (64-head sliding layers included), zero NaN, no crashes: 12-token completion at 14.65 tok/s, TTFT 0.37 s, greedy.
+- Root cause of the last `Invalid`: merge downloads requested the max-heads host array against a per-layer-heads device view (65,536 vs 131,072 bytes); clipped to `nout = rows*heads*kv_lora`.
+- Remaining quality gap (why output is still gibberish): routed MoE experts (512-choose-16, most of the model's parameters) are not called — only the shared expert runs; layer 0's dense MLP is zeroed. The routed-expert kernel path is already proven at 16k tok/s in the bench, so wiring it is the next concrete step.
+
 ## Progress round 27 (full-model CLI verified; serve crash root-caused)
 - **CLI `hy4-gpu-step /pack 0` runs all 42 layers with per-layer geometry (64-head sliding layers included): finite logits (min −9.12, max 8.74), 54.5 ms/token = 18.4 tok/s, RC=0.** The full GPU forward math is verified end-to-end on the real 3bpw pack.
 - Serve-side segfault root cause: the runner's attention scratch buffers were still sized for 32 heads — L2's 64-head q_b decode wrote 32 KB into a 16 KB `qfull` (heap corruption). A batch of resize edits had silently failed to apply. Fixed by actually resizing to `max_heads`; the serve no longer segfaults.
