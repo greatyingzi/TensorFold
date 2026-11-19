@@ -314,13 +314,26 @@ pub const Runner = struct {
                 std.debug.print("hy4 diag L{d} kvb v0=0x{x}\n", .{ li, ph[0] });
             }
             // Cache row = normalized latent (kvn) plus kv_a's roped tail, all BF16.
+            if (diag and li == 0) {
+                try self.s.synchronize();
+                std.debug.print("hy4 diag L0 pre-cachewrite\n", .{});
+            }
             var latent_copy = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.kvabf_dev.ptr, .len = cfg.kv_lora * 2 };
             try latent_copy.copyFrom(0, P.kvn, cfg.kv_lora * 2, self.s.handle);
+            if (diag and li == 0) {
+                try self.s.synchronize();
+                std.debug.print("hy4 diag L0 latent done\n", .{});
+            }
             var tail_f32 = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.kva + cfg.kv_lora * 4, .len = rope * 4 };
             try tail_f32.download(0, std.mem.sliceAsBytes(self.host_kva_f32[0..rope]));
+            if (diag and li == 0) std.debug.print("hy4 diag L0 tail dl done\n", .{});
             for (0..rope) |i| self.host_kva_bf[cfg.kv_lora + i] = bf16(self.host_kva_f32[i]);
             var tail_bf = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.kvabf_dev.ptr + cfg.kv_lora * 2, .len = rope * 2 };
             try tail_bf.upload(0, std.mem.sliceAsBytes(self.host_kva_bf[cfg.kv_lora ..][0..rope]));
+            if (diag and li == 0) {
+                try self.s.synchronize();
+                std.debug.print("hy4 diag L0 tail ul done\n", .{});
+            }
             try mla.rope(self.s, .{
                 .x = self.kvabf_dev.ptr + cfg.kv_lora * 2,
                 .x_row = KW,
@@ -329,11 +342,23 @@ pub const Runner = struct {
                 .o_row = KW,
                 .o_head = rope,
             }, 1, 1, self.pos_dev.ptr, self.inv_freq.ptr, 1.0);
+            if (diag and li == 0) {
+                try self.s.synchronize();
+                std.debug.print("hy4 diag L0 k-rope done\n", .{});
+            }
             var slot = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.cache[li].ptr + self.pos * KW * 2, .len = KW * 2 };
             try slot.copyFrom(0, self.kvabf_dev.ptr, KW * 2, self.s.handle);
+            if (diag and li == 0) {
+                try self.s.synchronize();
+                std.debug.print("hy4 diag L0 slot done\n", .{});
+            }
             if (diag and li == 2) std.debug.print("hy4 diag L2 cachewrite done\n", .{});
             // Absorb q_nope into the latent columns, then place the roped q tail in 512..575.
             try mla.absorbQ(self.s, P.qfull, nope + rope, self.wk[li], P.qa, KW, rows, heads, nope, cfg.kv_lora);
+            if (diag and li == 0) {
+                try self.s.synchronize();
+                std.debug.print("hy4 diag L0 absorb done\n", .{});
+            }
             if (diag and li == 2) std.debug.print("hy4 diag L2 absorb done\n", .{});
             for (0..heads) |h| {
                 var tail = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.qa + (h * KW + cfg.kv_lora) * 2, .len = rope * 2 };
@@ -345,7 +370,15 @@ pub const Runner = struct {
                 try pb.download(0, std.mem.sliceAsBytes(&ph));
                 std.debug.print("hy4 diag L2 qa v0=0x{x}\n", .{ph[0]});
             }
+            if (diag and li == 0) {
+                try self.s.synchronize();
+                std.debug.print("hy4 diag L0 tailcopies done\n", .{});
+            }
             try mla.chunks(self.s, P.qa, self.cache[li].ptr, self.pos_dev.ptr, self.parts, rows, heads, nch, scale);
+            if (diag and li == 0) {
+                try self.s.synchronize();
+                std.debug.print("hy4 diag L0 chunks done\n", .{});
+            }
             // p.sinks[li] is FP32 [heads] in the pack: no dtype conversion.
             if (diag and li == 2) {
                 var pb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.parts.po, .len = 8 };
@@ -354,16 +387,18 @@ pub const Runner = struct {
                 std.debug.print("hy4 diag L2 parts po0={d:.4}\n", .{ph[0]});
             }
             try mla.mergePartSink(self.s, self.parts, self.merged, rows, heads, nch, p.sinks[li]);
-            var merged_buf = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.merged.po, .len = rows * heads * cfg.kv_lora * 4 };
-            try merged_buf.download(0, std.mem.sliceAsBytes(self.host_ol_f32));
+            // Download only this layer's heads: the host arrays are max-heads sized.
+            const nout = rows * heads * cfg.kv_lora;
+            var merged_buf = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.merged.po, .len = nout * 4 };
+            try merged_buf.download(0, std.mem.sliceAsBytes(self.host_ol_f32[0..nout]));
             var l_buf = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.merged.pl, .len = rows * heads * 4 };
-            try l_buf.download(0, std.mem.sliceAsBytes(self.host_l));
-            for (self.host_ol_bf, self.host_ol_f32, 0..) |*b, v, i| {
+            try l_buf.download(0, std.mem.sliceAsBytes(self.host_l[0 .. rows * heads]));
+            for (0..nout) |i| {
                 const l = self.host_l[i / cfg.kv_lora];
-                b.* = bf16(if (l > 1e-6 and std.math.isFinite(l)) v / l else v);
+                self.host_ol_bf[i] = bf16(if (l > 1e-6 and std.math.isFinite(l)) self.host_ol_f32[i] / l else self.host_ol_f32[i]);
             }
             if (diag and li <= 2) std.debug.print("hy4 diag L{d} merge l0={d:.4} ol0={d:.4}\n", .{ li, self.host_l[0], self.host_ol_f32[0] });
-            try self.ol_dev.upload(0, std.mem.sliceAsBytes(self.host_ol_bf));
+            try self.ol_dev.upload(0, std.mem.sliceAsBytes(self.host_ol_bf[0..nout]));
             try mla.expandV(self.s, self.ol_dev.ptr, self.wv[li], P.attn_out, rows, heads, cfg.vdim, cfg.kv_lora);
             if (diag and li <= 2) {
                 var pb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.attn_out, .len = 8 };
