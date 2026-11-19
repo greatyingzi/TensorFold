@@ -47,6 +47,7 @@
 - Native DGX00 probe with the corrected binary, seed 120000: `sum_chain` agreement 2/5 = 40% (was 0% with the stale binary that lacked these modules), `target_only` 0%. The official-style MTP recipe in the repo's ling oracle confirms enorm/hnorm -> concat -> eh_proj -> draft block -> final_norm. sum_chain is the融合变体 to use in the spec-decode ring.
 - The spec-decode loop is wired into `hy4-runner ... spec TOKEN STEPS` via `draft.proposeDfly`; synthetic fixture smoke 2/2 accepted. A double-step bug (target advanced once at loop head and again in verify) was fixed.
 - 20-step native probe (seed 120000, 564.8s): `sum_chain` 4/20 = 20%, `target_only` 0/20 = 0%. Baselines: embed-vs-final cosine ~0.01, layer-41 hidden-vs-final ~0.75. The draft vector is above the embed baseline but below the target hidden; acceptance is real but modest. sum_chain is the fusion to use.
+- End-to-end `hy4-runner ... spec 120000 10` on the real checkpoint: 2/10 accepted (20%), 182.2s for 10 tokens on CPU. The draft ring is live in the host runner; GPU-side batched verification is the remaining lever for a decode-speed win.
 
 ### EXL3 3.0bpw quantization (2026-11-19 12:33)
 
