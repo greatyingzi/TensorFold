@@ -30,6 +30,10 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 26 (KV cache attempt reverted)
+- A first KV-cache implementation (per-layer [42][4096][576] BF16 cache, latent absorb, roped tail, chunks/merge/expandV) compiled on host but **segfaulted in Runner.init on DGX** before the GPU decode log line. The working service was restored (container `hy4serve10`, 137.9 s load, `/health` OK, 33 tok/s).
+- Root-cause candidates for the segfault: identity-decoding kv_b with 512 rows against scratch reserved for 128 rows; sink tensor is F32 [32] in the pack (not BF16), so any BF16 conversion is wrong. A corrected attempt is in progress.
+
 ## Progress round 25 (SERVICE RUNNING)
 - `tensorfold-native serve /pack --name hy4flash --parallel 1 --context 2048 --port 8080` **starts successfully on DGX00** with the real 3bpw GPU decode path: `hy_v4_flash: 3bpw GPU decode active, 611360 bytes of scratch and 1 stream`; model 59.29 GiB; loaded in 97.4 s; `/v1/models` and `/v1/completions` respond.
 - Measured serving throughput: 33.4 tok/s, TTFT 0.044 s, 8 tokens in 0.209 s (greedy).
