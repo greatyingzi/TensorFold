@@ -192,6 +192,125 @@ pub fn forwardBench(gpu: Gpu) !void {
     }
 }
 
+
+/// Upload one real EXL3 projection from the finished pack and time the shared decode kernel.
+/// Usage: hy4-gpu-bench exl3real PACK_DIR PROJECTION (e.g. model.layers.1.self_attn.q_a_proj)
+pub fn exl3Real(gpu: Gpu, dir: []const u8, proj: []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(gpu.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = gpu.io;
+    const sf = @import("core").safetensors;
+
+    const idx_path = try std.fs.path.join(a, &.{ dir, "model.safetensors.index.json" });
+    const idx_text = try std.Io.Dir.cwd().readFileAlloc(io, idx_path, a, .limited(64 << 20));
+    var doc = try std.json.parseFromSlice(std.json.Value, a, idx_text, .{});
+    const wm = doc.value.object.get("weight_map").?.object;
+
+    const tr_name = try std.fmt.allocPrint(a, "{s}.trellis", .{proj});
+    const shard_name = wm.get(tr_name) orelse return error.MissingExl3Tensor;
+    if (shard_name != .string) return error.MissingExl3Tensor;
+    const shard_path = try std.fs.path.join(a, &.{ dir, shard_name.string });
+    var file = try sf.File.open(a, io, shard_path);
+
+    const tr = file.get(tr_name) orelse return error.MissingExl3Tensor;
+    const su = file.get(try std.fmt.allocPrint(a, "{s}.suh", .{proj})) orelse return error.MissingExl3Tensor;
+    const sv = file.get(try std.fmt.allocPrint(a, "{s}.svh", .{proj})) orelse return error.MissingExl3Tensor;
+    // The pack's config declares the codebook; the marker name is only a footprint tag.
+    const cb: cuda.exl3.Codebook = .mul1;
+    if (file.get(try std.fmt.allocPrint(a, "{s}.mcg", .{proj})) == null and
+        file.get(try std.fmt.allocPrint(a, "{s}.mul1", .{proj})) == null and
+        file.get(try std.fmt.allocPrint(a, "{s}.inst3", .{proj})) == null) return error.MissingExl3Tensor;
+
+    const k = su.numel();
+    const n = sv.numel();
+    if (tr.rank != 3 or tr.shape[0] != k / 16 or tr.shape[1] != n / 16 or tr.shape[2] % 8 != 0)
+        return error.BadExl3Shape;
+    const halves: u32 = @intCast(tr.shape[2] / 8);
+    const st = cuda.exl3.strides(k, n, halves, false);
+    std.debug.print("exl3real {s}: k={d} n={d} halves={d} codebook={s} words={d} trellis_bytes={d}\n", .{ proj, k, n, halves, @tagName(cb), tr.shape[2], tr.bytes.len });
+
+    var up = cuda.exl3_upload.Uploader{ .d = gpu.d, .gpa = a, .max_buffers = 64 };
+    defer up.deinit();
+    const w: cuda.exl3.Weight = .{
+        .trellis = try up.dev(tr.bytes),
+        .suh = try up.dev(su.bytes),
+        .svh = try up.dev(sv.bytes),
+        .k = @intCast(k),
+        .n = @intCast(n),
+        .halves = halves,
+        .codebook = cb,
+        .stride_k = st.k,
+        .stride_nb = st.nb,
+    };
+
+    const rows: usize = 1;
+    const xh = try a.alloc(u16, rows * k);
+    @memset(xh, 0x3c00);
+    const x = try up.dev(std.mem.sliceAsBytes(xh));
+    const y = try up.dev(try a.alloc(u8, rows * n * 2));
+
+    var s = try cuda.Stream.init(gpu.d, false);
+    defer s.deinit();
+    var dense = try cuda.exl3.Dense.load(gpu.d);
+    defer dense.unload();
+    try dense.reserve(s, w);
+    for (0..3) |_| try dense.decode(s, w, x, .f16, rows, y, .f16);
+    try s.synchronize();
+
+    var t0 = try cuda.Event.init(gpu.d, true);
+    defer t0.deinit();
+    var t1 = try cuda.Event.init(gpu.d, true);
+    defer t1.deinit();
+    try t0.record(s);
+    for (0..50) |_| try dense.decode(s, w, x, .f16, rows, y, .f16);
+    try t1.record(s);
+    try t1.synchronize();
+    const ms = try cuda.Event.elapsedMs(t0, t1);
+    std.debug.print("exl3real decode: {d:.4} ms/row  {d:.1} tok/s  (real 3bpw {s})\n", .{ ms / 50.0, 50000.0 / ms, proj });
+    const yhost = try a.alloc(u16, n);
+    var dev_y = try cuda.memory.DeviceBuffer.alloc(gpu.d, n * 2);
+    defer dev_y.free();
+    try dev_y.copyFrom(0, y, n * 2, s.handle);
+    try dev_y.downloadAsync(0, std.mem.sliceAsBytes(yhost), s.handle);
+    try s.synchronize();
+    // Two CPU references: dequantized EXL3 matrix (loader orientation) and the pack's original BF16.
+    const fmt = @import("core").exl3_format;
+    const tree = try a.alloc(i16, (k / 16) * (n / 16) * tr.shape[2]);
+    @memcpy(std.mem.sliceAsBytes(tree), tr.bytes);
+    const suh = try a.alloc(f16, k);
+    @memcpy(std.mem.sliceAsBytes(suh), su.bytes);
+    const svh = try a.alloc(f16, n);
+    @memcpy(std.mem.sliceAsBytes(svh), sv.bytes);
+    const ref = try a.alloc(f64, k * n);
+    const scratch = try a.alloc(f64, 2 * k * n);
+    const fcb: fmt.Codebook = switch (cb) { .inst3 => .inst3, .mcg => .mcg, .mul1 => .mul1 };
+    fmt.dequantize(.{ .halves = @intCast(halves) }, fcb, tree, k / 16, n / 16, suh, svh, ref, scratch);
+    const wname = try std.fmt.allocPrint(a, "{s}.weight", .{proj});
+    const wshard = wm.get(wname) orelse return error.MissingExl3Tensor;
+    const wpath = try std.fs.path.join(a, &.{ dir, wshard.string });
+    var wfile = try sf.File.open(a, io, wpath);
+    const wt = wfile.get(wname) orelse return error.MissingExl3Tensor;
+    const wb = std.mem.bytesAsSlice(u16, wt.bytes);
+    var worst_q: f64 = 0;
+    var worst_b: f64 = 0;
+    var finite: usize = 0;
+    for (0..n) |j| {
+        const got: f64 = @floatCast(@as(f16, @bitCast(yhost[j])));
+        var wq: f64 = 0;
+        var wbv: f64 = 0;
+        for (0..k) |kk| {
+            wq += ref[kk * n + j];
+            const bits = wb[j * k + kk];
+            wbv += @as(f64, @floatCast(@as(f32, @bitCast(@as(u32, bits) << 16))));
+        }
+        if (std.math.isFinite(got)) finite += 1;
+        worst_q = @max(worst_q, @abs(got - wq) / @max(1e-6, @abs(wq)));
+        worst_b = @max(worst_b, @abs(got - wbv) / @max(1e-6, @abs(wbv)));
+    }
+    std.debug.print("exl3real numerics: finite {d}/{d} worst_vs_deq {e:.3} worst_vs_bf16 {e:.3}\n", .{ finite, n, worst_q, worst_b });
+}
+
 fn bfOfHost(bits: u16) f32 {
     return @bitCast(@as(u32, bits) << 16);
 }
