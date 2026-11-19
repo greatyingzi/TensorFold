@@ -154,7 +154,7 @@ fn loadExperts(a: std.mem.Allocator, io: std.Io, p: *Pack, files: *std.StringHas
         .uniform_k2 = 6,
         .gu_stride = width / 16,
         .limit = p.cfg.swiglu_limit,
-        .act_mode = 1,
+        .act_mode = 0,
     };
 }
 

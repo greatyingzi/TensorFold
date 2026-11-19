@@ -526,11 +526,13 @@ pub const Runner = struct {
                 // Routed: latent_down -> experts -> latent_up.
                 try dense.decode(self.s, L.routed_down, P.xbuf, .bf16, rows, self.latent_in, .bf16);
                 if (self.pos == 0 and li == 1) {
-                    const li4 = try self.a.alloc(u16, 4);
+                    const li4 = try self.a.alloc(u16, 256);
                     defer self.a.free(li4);
-                    var lb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.latent_in, .len = 8 };
+                    var lb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.latent_in, .len = 512 };
                     try lb.download(0, std.mem.sliceAsBytes(li4));
-                    std.debug.print("GPUDUMP L1 latent_in {d:.4} {d:.4}\n", .{ @as(f32, @bitCast(@as(u32, li4[0]) << 16)), @as(f32, @bitCast(@as(u32, li4[1]) << 16)) });
+                    var lmx: f32 = 0;
+                    for (li4) |v| lmx = @max(lmx, @abs(@as(f32, @bitCast(@as(u32, v) << 16))));
+                    std.debug.print("GPUDUMP L1 latent_in max256 {d:.4} first {d:.4}\n", .{ lmx, @as(f32, @bitCast(@as(u32, li4[0]) << 16)) });
                 }
                 const ex = self.ex orelse return error.RunnerNotReady;
                 const el = L.experts orelse return error.RunnerNotReady;
@@ -540,11 +542,13 @@ pub const Runner = struct {
                 try ex.run(self.s, el, self.latent_in, 1536, .bf16, self.pick_dev, self.wts_dev, rows, self.expert_out, sc);
                 try dense.decode(self.s, L.routed_up, self.expert_out, .f32, rows, self.routed_out, .bf16);
                 if (self.pos == 0 and li == 1) {
-                    const eo = try self.a.alloc(f32, 4);
+                    const eo = try self.a.alloc(f32, 256);
                     defer self.a.free(eo);
-                    var eb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.expert_out, .len = 16 };
+                    var eb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.expert_out, .len = 1024 };
                     try eb.download(0, std.mem.sliceAsBytes(eo));
-                    std.debug.print("GPUDUMP L1 expert_out {d:.4} {d:.4} picks", .{ eo[0], eo[1] });
+                    var emx: f32 = 0;
+                    for (eo) |v| emx = @max(emx, @abs(v));
+                    std.debug.print("GPUDUMP L1 expert_out max256 {d:.4} first {d:.4} picks", .{ emx, eo[0] });
                     for (self.host_pick[0..4]) |pk| std.debug.print(" {d}", .{pk});
                     for (self.host_wts[0..4]) |w| std.debug.print(" w={d:.3}", .{w});
                     std.debug.print("\n", .{});

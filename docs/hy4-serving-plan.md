@@ -30,6 +30,13 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 37 (bug is context-dependent)
+- act_mode=0 A/B: expert_out unchanged (0.0009) — act_mode ruled out.
+- E512 harness (512 experts, real picks 223/395/382/497, real weights): GPU max 0.070 on random x — **the 512-expert scale works standalone.** (Its printed ref was the stale experts-0-3 block — void; the scale verdict stands from E4 + linearity.)
+- Runner: latent_in max256 = 0.2275 (healthy) yet expert_out max256 = 0.0009 (~50x small). Same picks/weights, same layer fields, same scratch zeroing.
+- Conclusion: the failure is CONTEXT-DEPENDENT — the expert path works standalone and collapses inside the full step. Prime suspects: (a) device-memory corruption of the expert weights/pointer tables by an earlier op in the step (attention/L0-dense/IHC buffers), (b) an unnoticed Layer-field difference between loadExperts and the harness.
+- Next: in-situ integrity dump — at L1 in the runner, read back pick 223's trellis pointer and suh scale values right before ex.run; if garbage → find the corrupting op; if intact → diff Layer structs field-by-field.
+
 ## Progress round 36 (multi-expert path VERIFIED at 4-expert scale)
 - E4 harness (experts=4, pointer tables, stacked scales [4,1536], picks [0..3], wts 0.25): **GPU max 0.241 vs BF16 weighted ref 0.263 — 8% = accumulated quantization noise. The kernel AND the multi-expert grouping path are correct.**
 - Combined with the single-expert verification (2-4%), the expert machinery is sound at small scale. The runner's expert_out=0.0006 must come from what DIFFERS from the working harness: (1) 512-expert scale (pointer table 4KB, stacked scales 1.5MB, group() over 512), (2) act_mode=1 vs the harness's 0, (3) the runner's real latent_in/picks/wts.

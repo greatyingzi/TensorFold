@@ -541,7 +541,7 @@ pub fn expertCheck(gpu: Gpu, dir: []const u8, layer: usize, expert: usize, srcdi
     std.debug.print("expertcheck: gu trellis {any} dn trellis {any}\n", .{ gu_tr.shape[0..3], dn_tr.shape[0..3] });
 
     // upload as a 1-expert layer
-    var up = cuda.exl3_upload.Uploader{ .d = gpu.d, .gpa = a, .max_buffers = 64 };
+    var up = cuda.exl3_upload.Uploader{ .d = gpu.d, .gpa = a, .max_buffers = 2000 };
     defer up.deinit();
     const gu_suh = try a.alloc(u8, dims * 2);
     @memcpy(gu_suh, gu_su.bytes);
@@ -717,14 +717,15 @@ pub fn expertCheck(gpu: Gpu, dir: []const u8, layer: usize, expert: usize, srcdi
 
     // 4-expert harness: reproduce the runner's multi-expert configuration.
     {
-        var gt4 = try a.alloc(u64, 4);
-        var dt4 = try a.alloc(u64, 4);
-        const gs4 = try a.alloc(u8, 4 * dims * 2);
-        const gv4 = try a.alloc(u8, 4 * 2 * width * 2);
-        const ds4 = try a.alloc(u8, 4 * width * 2);
-        const dv4 = try a.alloc(u8, 4 * dims * 2);
-        const k24 = try a.alloc(i32, 4);
-        for (0..4) |e| {
+        const NE: usize = 512;
+        var gt4 = try a.alloc(u64, NE);
+        var dt4 = try a.alloc(u64, NE);
+        const gs4 = try a.alloc(u8, NE * dims * 2);
+        const gv4 = try a.alloc(u8, NE * 2 * width * 2);
+        const ds4 = try a.alloc(u8, NE * width * 2);
+        const dv4 = try a.alloc(u8, NE * dims * 2);
+        const k24 = try a.alloc(i32, NE);
+        for (0..NE) |e| {
             const gu4 = try tget(a, io, &files, wm, dir, try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.gate_up.{d}.trellis", .{ layer, e }));
             const dn4 = try tget(a, io, &files, wm, dir, try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.down.{d}.trellis", .{ layer, e }));
             const su4 = try tget(a, io, &files, wm, dir, try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.gate_up.{d}.suh", .{ layer, e }));
@@ -752,7 +753,7 @@ pub fn expertCheck(gpu: Gpu, dir: []const u8, layer: usize, expert: usize, srcdi
             .svh_u = try up.dev(gv4),
             .suh_d = try up.dev(ds4),
             .svh_d = try up.dev(dv4),
-            .experts = 4,
+            .experts = NE,
             .dims = dims,
             .width = width,
             .codebook = .mul1,
@@ -768,11 +769,11 @@ pub fn expertCheck(gpu: Gpu, dir: []const u8, layer: usize, expert: usize, srcdi
         const sc4 = try cuda.exl3_experts.scratch(scb4.ptr, L4, rows, slots);
         const p4 = try a.alloc(i32, slots);
         @memset(p4, 0);
-        for (0..4) |e| p4[e] = @intCast(e);
+        for (picks, 0..) |pv, i| p4[i] = pv;
         try pickm_buf.upload(0, std.mem.sliceAsBytes(p4));
         const w4 = try a.alloc(f32, slots);
         @memset(w4, 0);
-        for (0..4) |e| w4[e] = 0.25;
+        for (ws, 0..) |wv, i| w4[i] = wv;
         try wtsm_buf.upload(0, std.mem.sliceAsBytes(w4));
         try ex.run(s, L4, x, dims, .bf16, pick, wts, rows, out, sc4);
         try s.synchronize();
@@ -804,7 +805,7 @@ pub fn expertCheck(gpu: Gpu, dir: []const u8, layer: usize, expert: usize, srcdi
         }
         var rr4: f32 = 0;
         for (r4) |v| rr4 = @max(rr4, @abs(v));
-        std.debug.print("expertcheck E4: GPU max {d:.5} ref max {d:.5} first g {d:.5} r {d:.5}\n", .{ g4, rr4, out_m[0], r4[0] });
+        std.debug.print("expertcheck E512: GPU max {d:.5} ref max {d:.5} first g {d:.5} r {d:.5}\n", .{ g4, rr4, out_m[0], r4[0] });
     }
 
     const gu_out = try a.alloc(f32, 2 * width);
