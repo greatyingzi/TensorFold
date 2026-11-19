@@ -29,6 +29,7 @@ pub const Runner = struct {
     drows: ?cuda.dense_rows.DenseRows = null,
     act: ?cuda.act_rows.ActRows = null,
     mla: ?cuda.mla.Mla = null,
+    ex: ?cuda.exl3_experts.Experts = null,
     bufs: [200]cuda.memory.DeviceBuffer = undefined,
     nbuf: usize = 0,
     pdev: DevPtrs = undefined,
@@ -52,6 +53,27 @@ pub const Runner = struct {
     host_l: []f32 = &.{},
     pos: usize = 0,
     gate_logits: u64 = 0,
+    expert_scratch: u64 = 0,
+    expert_scratch_len: usize = 0,
+    router_logits: u64 = 0,
+    pick_dev: u64 = 0,
+    wts_dev: u64 = 0,
+    latent_in: u64 = 0,
+    expert_out: u64 = 0,
+    routed_out: u64 = 0,
+    d0_gate: u64 = 0,
+    d0_up: u64 = 0,
+    d0_gate_bf: u64 = 0,
+    d0_up_bf: u64 = 0,
+    d0_act: u64 = 0,
+    d0_out: u64 = 0,
+    d0_out_bf: u64 = 0,
+    host_router: []f32 = &.{},
+    host_router_bias: []f32 = &.{},
+    host_pick: []i32 = &.{},
+    host_wts: []f32 = &.{},
+    host_combine: []f32 = &.{},
+    host_combine_bf: []u16 = &.{},
 
     const DevPtrs = struct {
         mixed: u64,
@@ -151,12 +173,35 @@ pub const Runner = struct {
         r.drows = try cuda.dense_rows.DenseRows.load(d);
         r.act = try cuda.act_rows.ActRows.load(d);
         r.mla = try cuda.mla.Mla.load(d);
+        r.ex = try cuda.exl3_experts.Experts.load(d);
         std.debug.print("hy4 runner init: kernels loaded\n", .{});
         const H = p.cfg.hidden;
         const HC = p.cfg.hc;
         r.host_streams = try a.alloc(u16, H * HC);
         r.host_logits = try a.alloc(f32, p.cfg.vocab);
         r.gate_logits = try r.ptr(rows * p.cfg.max_heads * p.cfg.vdim * 4);
+        r.router_logits = try r.ptr(rows * 512 * 4);
+        r.pick_dev = try r.ptr(rows * p.cfg.topk * 4);
+        r.wts_dev = try r.ptr(rows * p.cfg.topk * 2);
+        r.latent_in = try r.ptr(rows * 1536 * 2);
+        r.expert_out = try r.ptr(rows * 1536 * 4);
+        r.routed_out = try r.ptr(rows * H * 2);
+        r.d0_gate = try r.ptr(rows * 13824 * 4);
+        r.d0_up = try r.ptr(rows * 13824 * 4);
+        r.d0_gate_bf = try r.ptr(rows * 13824 * 2);
+        r.d0_up_bf = try r.ptr(rows * 13824 * 2);
+        r.d0_act = try r.ptr(rows * 13824 * 2);
+        r.d0_out = try r.ptr(rows * H * 4);
+        r.d0_out_bf = try r.ptr(rows * H * 2);
+        r.host_router = try a.alloc(f32, 512);
+        r.host_router_bias = try a.alloc(f32, 512);
+        r.host_pick = try a.alloc(i32, p.cfg.topk);
+        r.host_wts = try a.alloc(f32, p.cfg.topk);
+        r.host_combine = try a.alloc(f32, H);
+        r.host_combine_bf = try a.alloc(u16, H);
+        const worst: cuda.exl3_experts.Layer = .{ .gate = 0, .up = 0, .down = 0, .gate_k2 = 0, .up_k2 = 0, .down_k2 = 0, .suh_g = 0, .suh_u = 0, .svh_g = 0, .svh_u = 0, .suh_d = 0, .svh_d = 0, .experts = 512, .dims = 1536, .width = 1536, .codebook = .mul1 };
+        r.expert_scratch_len = try cuda.exl3_experts.scratchBytes(worst, rows, p.cfg.topk);
+        r.expert_scratch = try r.ptr(r.expert_scratch_len);
         r.host_kva_f32 = try a.alloc(f32, KW);
         r.host_kva_bf = try a.alloc(u16, KW);
         r.host_ol_f32 = try a.alloc(f32, p.cfg.max_heads * p.cfg.kv_lora);
@@ -255,6 +300,38 @@ pub const Runner = struct {
     }
 
     /// One token in, host logits out. Synchronous, so lanes sharing a Runner cannot overlap.
+
+    /// Sigmoid + bias, top-k (n_group = 1), normalized and scaled: the released router.
+    fn hostRoute(self: *Runner) !void {
+        const c = self.p.cfg;
+        const n = 512;
+        var scores: [512]f32 = undefined;
+        for (0..n) |i| {
+            const lg = self.host_router[i];
+            scores[i] = 1.0 / (1.0 + @exp(-lg));
+        }
+        var choice: [512]f32 = undefined;
+        for (0..n) |i| choice[i] = scores[i] + self.host_router_bias[i];
+        var idx: [512]usize = undefined;
+        for (0..n) |i| idx[i] = i;
+        const SortCtx = struct {
+            ch: *const [512]f32,
+            fn lt(s: @This(), a: usize, b: usize) bool {
+                if (s.ch[a] != s.ch[b]) return s.ch[a] > s.ch[b];
+                return a < b;
+            }
+        };
+        std.mem.sort(usize, idx[0..n], SortCtx{ .ch = &choice }, SortCtx.lt);
+        var total: f64 = 0;
+        for (0..c.topk) |i| {
+            self.host_pick[i] = @intCast(idx[i]);
+            self.host_wts[i] = scores[idx[i]];
+            total += self.host_wts[i];
+        }
+        const den = total + 1e-20;
+        for (0..c.topk) |i| self.host_wts[i] = @floatCast(self.host_wts[i] / den * c.routed_scale);
+    }
+
     pub fn step(self: *Runner, token: usize) ![]const f32 {
         const p = self.p;
         const cfg = p.cfg;
@@ -422,13 +499,68 @@ pub const Runner = struct {
             try ihc.collapse(self.s, self.streams.ptr, p.ffn_fn[li], p.ffn_base[li], p.ffn_scale[li], P.mixed, rows, H, HC, cfg.hc_eps, cfg.hc_magnitude, false);
             try norms.rms(self.s, P.mixed, .bf16, p.post_attn_norm[li], P.xbuf, .bf16, rows, H, cfg.eps);
             if (li > 0) {
+                // Router: gate.weight @ x on device, sigmoid+bias top-k on host.
+                try self.drows.?.rows(self.s, P.xbuf, H, L.router_w, self.router_logits, 512, rows, 512, H);
+                var rl = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.router_logits, .len = rows * 512 * 4 };
+                try rl.download(0, std.mem.sliceAsBytes(self.host_router));
+                var bias_buf = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = L.router_bias, .len = 512 * 4 };
+                try bias_buf.download(0, std.mem.sliceAsBytes(self.host_router_bias));
+                try self.hostRoute();
+                var pick_buf = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.pick_dev, .len = rows * p.cfg.topk * 4 };
+                try pick_buf.upload(0, std.mem.sliceAsBytes(self.host_pick));
+                const wts16 = try self.a.alloc(u16, p.cfg.topk);
+                defer self.a.free(wts16);
+                for (self.host_wts, 0..) |v, i| wts16[i] = @bitCast(@as(f16, @floatCast(v)));
+                var wts_buf = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.wts_dev, .len = rows * p.cfg.topk * 2 };
+                try wts_buf.upload(0, std.mem.sliceAsBytes(wts16));
+                // Routed: latent_down -> experts -> latent_up.
+                try dense.decode(self.s, L.routed_down, P.xbuf, .bf16, rows, self.latent_in, .bf16);
+                const ex = self.ex orelse return error.RunnerNotReady;
+                const el = L.experts orelse return error.RunnerNotReady;
+                const sc = try cuda.exl3_experts.scratch(self.expert_scratch, el, rows, p.cfg.topk);
+                try ex.run(self.s, el, self.latent_in, 1536, .bf16, self.pick_dev, self.wts_dev, rows, self.expert_out, sc);
+                try dense.decode(self.s, L.routed_up, self.expert_out, .f32, rows, self.routed_out, .bf16);
+                // Shared expert.
                 try dense.decode(self.s, L.up, P.xbuf, .bf16, rows, P.gu, .bf16);
                 try dense.decode(self.s, L.gate, P.xbuf, .bf16, rows, P.gu2, .bf16);
                 try act.swiglu(self.s, P.gu, 1536, P.gu2, 1536, P.gu_out, null, rows, 1536);
                 try dense.decode(self.s, L.down, P.gu_out, .bf16, rows, P.ffn, .bf16);
+                // combine = rmsNorm(routed + shared) with the layer's combine norm.
+                var rb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.routed_out, .len = rows * H * 2 };
+                const routed_host = try self.a.alloc(u16, H);
+                defer self.a.free(routed_host);
+                try rb.download(0, std.mem.sliceAsBytes(routed_host));
+                var fb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.ffn, .len = rows * H * 2 };
+                const shared_host = try self.a.alloc(u16, H);
+                defer self.a.free(shared_host);
+                try fb.download(0, std.mem.sliceAsBytes(shared_host));
+                var cn = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = L.combine_norm, .len = H * 4 };
+                const cn_host = try self.a.alloc(f32, H);
+                defer self.a.free(cn_host);
+                try cn.download(0, std.mem.sliceAsBytes(cn_host));
+                var ss: f64 = 0;
+                for (0..H) |i| {
+                    const rt = @as(f32, @bitCast(@as(u32, routed_host[i]) << 16));
+                    const sh = @as(f32, @bitCast(@as(u32, shared_host[i]) << 16));
+                    self.host_combine[i] = rt + sh;
+                    ss += @as(f64, self.host_combine[i]) * self.host_combine[i];
+                }
+                const hf: f64 = @floatFromInt(H);
+                const inv: f32 = @floatCast(1.0 / @sqrt(ss / hf + cfg.eps));
+                for (0..H) |i| self.host_combine_bf[i] = bf16(self.host_combine[i] * inv * cn_host[i]);
+                try fb.upload(0, std.mem.sliceAsBytes(self.host_combine_bf));
             } else {
-                var ffn_buf = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.ffn, .len = rows * H * 2 };
-                try ffn_buf.fill8(0, self.s.handle);
+                // Layer 0's dense MLP (BF16 weights): drows gives fp32, swiglu wants bf16.
+                try self.drows.?.rows(self.s, P.xbuf, H, L.dense_gate, self.d0_gate, 13824, rows, 13824, H);
+                try self.drows.?.rows(self.s, P.xbuf, H, L.dense_up, self.d0_up, 13824, rows, 13824, H);
+                try ihc.castBf16(self.s, self.d0_gate, self.d0_gate_bf, rows * 13824);
+                try ihc.castBf16(self.s, self.d0_up, self.d0_up_bf, rows * 13824);
+                try act.swiglu(self.s, self.d0_gate_bf, 13824, self.d0_up_bf, 13824, self.d0_act, null, rows, 13824);
+                try self.drows.?.rows(self.s, self.d0_act, 13824, L.dense_down, self.d0_out, H, rows, H, 13824);
+                try ihc.castBf16(self.s, self.d0_out, self.d0_out_bf, rows * H);
+                var fbn = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.ffn, .len = rows * H * 2 };
+                const srcn = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.d0_out_bf, .len = rows * H * 2 };
+                try fbn.copyFrom(0, srcn.ptr, rows * H * 2, self.s.handle);
             }
             if (diag and li < 4) {
                 var pf = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.ffn, .len = 8 };

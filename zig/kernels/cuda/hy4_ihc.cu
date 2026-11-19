@@ -214,6 +214,15 @@ tf_hy4_gate_sigmoid(__nv_bfloat16* o, const float* g, long long n) {
     o[i] = __float2bfloat16_rn(__fmul_rn(bf2f(o[i]), sigmoid_f32(g[i])));
 }
 
+
+// Elementwise fp32 -> bf16 rounding cast.
+extern "C" __global__ void __launch_bounds__(256)
+tf_hy4_f32_bf16(const float* x, __nv_bfloat16* o, long long n) {
+    const long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    o[i] = __float2bfloat16_rn(x[i]);
+}
+
 // In-place residual write-back: streams[r][c][h] += post[c] * branch[r][h].
 extern "C" __global__ void __launch_bounds__(256)
 tf_hy4_stream_update(__nv_bfloat16* streams, const __nv_bfloat16* branch, const float* post,

@@ -9,6 +9,9 @@ pub const Config = struct {
     hc: usize = 4,
     heads: usize = 32,
     max_heads: usize = 64, // sliding layers' 64; attention buffers take the max
+    routed_scale: f32 = 1.0,
+    topk: usize = 16,
+    swiglu_limit: f32 = 10.0,
     kv_lora: usize = 512,
     q_lora: usize = 1024,
     nope: usize = 192,
@@ -39,6 +42,14 @@ pub const LayerWeights = struct {
     up: Linear = undefined,
     gate: Linear = undefined,
     attn_gate_w: u64 = 0, // self_attn.linear_gate.weight (BF16, not EXL3)
+    routed_down: Linear = undefined, // mlp.routed_expert_down_proj (EXL3)
+    routed_up: Linear = undefined, // mlp.routed_expert_up_proj (EXL3)
+    router_w: u64 = 0, // mlp.gate.weight BF16 [512, 3072]
+    router_bias: u64 = 0, // mlp.gate.e_score_correction_bias F32 [512]
+    combine_norm: u64 = 0, // mlp.combine_output_norm.weight, fp32 on device
+    dense_gate: u64 = 0, // layer 0's dense MLP (BF16)
+    dense_up: u64 = 0,
+    dense_down: u64 = 0,
     down: Linear = undefined,
     experts: ?cuda.exl3_experts.Layer = null,
 };
@@ -142,6 +153,8 @@ fn loadExperts(a: std.mem.Allocator, io: std.Io, p: *Pack, files: *std.StringHas
         .codebook = .mul1,
         .uniform_k2 = 6,
         .gu_stride = width / 16,
+        .limit = p.cfg.swiglu_limit,
+        .act_mode = 1,
     };
 }
 
@@ -221,10 +234,19 @@ pub fn load(a: std.mem.Allocator, io: std.Io, d: *const cuda.Driver, dir: []cons
         L.kv_b = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.kv_b_proj", .{pre}));
         L.o = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.o_proj", .{pre}));
         if (li > 0) {
+            L.routed_down = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}mlp.routed_expert_down_proj", .{pre}));
+            L.routed_up = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}mlp.routed_expert_up_proj", .{pre}));
+            L.router_w = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}mlp.gate.weight", .{pre}));
+            L.router_bias = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}mlp.gate.e_score_correction_bias", .{pre}));
+            L.combine_norm = try scalarF32(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}mlp.combine_output_norm.weight", .{pre}));
             L.experts = try loadExperts(a, io, &p, &files, wm, dir, li);
             L.up = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}mlp.shared_experts.up_proj", .{pre}));
             L.gate = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}mlp.shared_experts.gate_proj", .{pre}));
             L.down = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}mlp.shared_experts.down_proj", .{pre}));
+        } else {
+            L.dense_gate = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}mlp.gate_proj.weight", .{pre}));
+            L.dense_up = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}mlp.up_proj.weight", .{pre}));
+            L.dense_down = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}mlp.down_proj.weight", .{pre}));
         }
         p.attn_fn[li] = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}hc_attn_layer.hc_pre.hc_fn", .{pre}));
         p.attn_base[li] = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}hc_attn_layer.hc_pre.hc_base", .{pre}));

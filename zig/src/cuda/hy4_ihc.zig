@@ -16,6 +16,7 @@ pub const Ihc = struct {
     head_fn: Function,
     gates_fn: Function,
     gate_sig_fn: Function,
+    cast_fn: Function,
 
     pub fn load(d: *const Driver) !Ihc {
         if (!kernels.available) return error.BuiltWithoutKernels;
@@ -28,6 +29,7 @@ pub const Ihc = struct {
             .head_fn = try mod.function("tf_hy4_hc_head"),
             .gates_fn = try mod.function("tf_hy4_ihc_gates"),
             .gate_sig_fn = try mod.function("tf_hy4_gate_sigmoid"),
+            .cast_fn = try mod.function("tf_hy4_f32_bf16"),
         };
     }
 
@@ -77,6 +79,18 @@ pub const Ihc = struct {
     }
 
 
+
+
+    /// Elementwise fp32 -> bf16 cast.
+    pub fn castBf16(self: *const Ihc, s: Stream, x: u64, o: u64, n: usize) !void {
+        if (n == 0) return;
+        var a: Args = .{};
+        a.add(x);
+        a.add(o);
+        a.add(@as(i64, @intCast(n)));
+        const per: u32 = 256;
+        try launch_.launch(self.cast_fn, .{ .grid = .{ .x = @intCast((n + per - 1) / per) }, .block = .{ .x = per } }, s, &a);
+    }
 
     /// Elementwise attention output gate: o[i] *= sigmoid(g[i]), g fp32, o bf16.
     pub fn gateSigmoid(self: *const Ihc, s: Stream, o: u64, g: u64, n: usize) !void {
