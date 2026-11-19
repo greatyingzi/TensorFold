@@ -139,6 +139,7 @@ pub fn forwardBench(gpu: Gpu) !void {
     const attn_out = try r.zeros(16 * heads * vdim * 2);
     const wv = try r.zeros(heads * vdim * lw * 2);
     const wk = try r.zeros(heads * nope * lw * 2);
+    const sinks = try r.zeros(heads * 4);
     const nch = (cache_rows + 511) / 512;
 
     for ([_]usize{1}) |rows| {
@@ -166,7 +167,7 @@ pub fn forwardBench(gpu: Gpu) !void {
                 }
                 try mla.absorbQ(s, qa, nope, wk, qa, lw + rw, rows, heads, nope, lw);
                 try mla.chunks(s, qa, caches[li], poss[li], .{ .po = po, .pm = pm, .pl = pl }, rows, heads, nch, 0.0625);
-                try mla.mergePart(s, .{ .po = po, .pm = pm, .pl = pl }, merged, rows, heads, nch);
+                try mla.mergePartSink(s, .{ .po = po, .pm = pm, .pl = pl }, merged, rows, heads, nch, sinks);
                 try mla.expandV(s, ol, wv, attn_out, rows, heads, vdim, lw);
             }
         }

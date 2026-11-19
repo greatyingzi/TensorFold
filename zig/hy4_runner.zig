@@ -38,6 +38,42 @@ fn embedRow(a: std.mem.Allocator, bag: *const @import("src/families/hy_v4_flash/
     return out;
 }
 
+
+fn topIndices(a: std.mem.Allocator, v: []const f32, k: usize) ![]usize {
+    const idx = try a.alloc(usize, v.len);
+    for (idx, 0..) |*p, i| p.* = i;
+    std.mem.sort(usize, idx, v, struct {
+        fn lessThan(xs: []const f32, p: usize, q: usize) bool {
+            if (xs[p] != xs[q]) return xs[p] > xs[q];
+            return p < q;
+        }
+    }.lessThan);
+    return idx[0..k];
+}
+
+fn topOverlap(xs: []const usize, ys: []const usize) usize {
+    var n: usize = 0;
+    for (xs) |x| {
+        for (ys) |y| {
+            if (x == y) n += 1;
+        }
+    }
+    return n;
+}
+
+fn cosine(x: []const f32, y: []const f32) f32 {
+    var dot: f64 = 0;
+    var nx: f64 = 0;
+    var ny: f64 = 0;
+    for (x, y) |a, b| {
+        dot += @as(f64, a) * @as(f64, b);
+        nx += @as(f64, a) * @as(f64, a);
+        ny += @as(f64, b) * @as(f64, b);
+    }
+    if (nx == 0 or ny == 0) return 0;
+    return @floatCast(dot / @sqrt(nx * ny));
+}
+
 fn probe(a: std.mem.Allocator, io: std.Io, dir: []const u8, seed: usize, steps: usize) !void {
     const adm = try loader.inspect(a, io, dir);
     const meta = adm.meta;
@@ -74,35 +110,82 @@ fn probe(a: std.mem.Allocator, io: std.Io, dir: []const u8, seed: usize, steps: 
         }
         const dh = try a.alloc(f32, h);
         try dr_sum.step(s.dump_buf[0..ntarget], row, step_i, .sum_chain, dh);
+        const hcos = cosine(dh, s.last_hidden);
         const lsum: []f32 = logits_buf[0..c.vocab];
-        try headVec(lsum, &bag, dh, c.vocab, h);
+        try headVec(lsum, &bag, dh, c.vocab, h, c.eps);
         var asum: usize = 0;
         for (lsum, 0..) |v, i| {
             if (v > lsum[asum]) asum = i;
         }
         try dr_tgt.step(s.dump_buf[0..ntarget], row, step_i, .target_only, dh);
         const ltgt: []f32 = logits_buf[c.vocab ..][0..c.vocab];
-        try headVec(ltgt, &bag, dh, c.vocab, h);
+        try headVec(ltgt, &bag, dh, c.vocab, h, c.eps);
         var atgt: usize = 0;
         for (ltgt, 0..) |v, i| {
             if (v > ltgt[atgt]) atgt = i;
         }
         if (asum == best) agree_sum += 1;
         if (atgt == best) agree_tgt += 1;
-        if (step_i % 5 == 0 or step_i == steps - 1) std.debug.print("PROBE step {d}: main {d} sum {d} tgt {d}\n", .{ step_i, best, asum, atgt });
+        const top_main = try topIndices(a, logits, 10);
+        const top_sum = try topIndices(a, lsum, 10);
+        const top_tgt = try topIndices(a, ltgt, 10);
+        if (step_i % 5 == 0 or step_i == steps - 1) std.debug.print("PROBE step {d}: main {d} sum {d} tgt {d} top10 sum {d}/10 tgt {d}/10 hcos {d:.4}\n", .{ step_i, best, asum, atgt, topOverlap(top_main, top_sum), topOverlap(top_main, top_tgt), hcos });
         tok = best;
     }
     const ns = nowNs() - t0;
     std.debug.print("PROBE RESULT steps {d} agree_sum {d} ({d}%) agree_target {d} ({d}%) ns {d}\n", .{ steps, agree_sum, agree_sum * 100 / steps, agree_tgt, agree_tgt * 100 / steps, ns });
 }
 
-fn headVec(y: []f32, bag: *const @import("src/families/hy_v4_flash/weights.zig").Bag, x: []const f32, rows: usize, cols: usize) !void {
+fn headVec(y: []f32, bag: *const @import("src/families/hy_v4_flash/weights.zig").Bag, x: []f32, rows: usize, cols: usize, eps: f32) !void {
+    const nw = bag.get("norm.weight") orelse return error.MissingHy4Tensor;
+    const nweight = switch (nw.value) {
+        .f32s => |v| v,
+        else => return error.ExpectedF32Tensor,
+    };
+    try ops.rmsNorm(x, x, nweight, eps);
     const t = bag.get("lm_head.weight") orelse return error.MissingHy4Tensor;
     switch (t.value) {
         .f32s => |v| try ops.matvec(y, v, x, rows, cols),
         .bf16raw => |v| try ops.matvecBf16(y, v, x, rows, cols),
         else => return error.ExpectedF32Tensor,
     }
+}
+
+
+fn specDecode(a: std.mem.Allocator, io: std.Io, dir: []const u8, token: usize, count: usize) !void {
+    const adm = try loader.inspect(a, io, dir);
+    const meta = adm.meta;
+    var c = try config.read(a, io, dir);
+    c.engram.count = 0;
+    c.allow_no_engram = true;
+    var bag = try weights.loadStreaming(a, io, dir, &meta, 0);
+    defer bag.deinit();
+    const ntarget = @min(c.dfly.target_count, 8);
+    var s = try session.Session.init(a, &c, &bag, count + 2);
+    defer s.deinit();
+    for (0..ntarget) |i| {
+        s.dump_buf[i] = try a.alloc(f32, c.hidden);
+        s.dump_layers[i] = @intCast(c.dfly.targets[i]);
+    }
+    s.dump_n = ntarget;
+    var dr = try dfly_mod.Drafter.init(a, &c, &bag, count + 2);
+    defer dr.deinit();
+    const drafts = try a.alloc(u32, 1);
+    var tok: usize = token % c.vocab;
+    var accepted: usize = 0;
+    const t0 = nowNs();
+    for (0..count) |step_i| {
+        const logits = try s.step(tok);
+        const next = try spec.pick(logits);
+        try @import("src/families/hy_v4_flash/draft.zig").proposeDfly(a, &c, &bag, &s, &dr, tok, drafts);
+        const n = try @import("src/families/hy_v4_flash/draft.zig").verify(&s, logits, drafts);
+        if (n > 0) accepted += 1;
+        tok = next;
+        if (n == 0) _ = try s.step(tok);
+        if (step_i % 5 == 0 or step_i == count - 1) std.debug.print("SPEC step {d}: draft {d} target {d} accepted {d}\n", .{ step_i, drafts[0], next, n });
+    }
+    const ns = nowNs() - t0;
+    std.debug.print("SPEC RESULT tokens {d} accepted {d} ({d}%) ns {d} tok_per_s {d}\n", .{ count, accepted, if (count > 0) accepted * 100 / count else 0, ns, if (ns > 0) @divTrunc(@as(i64, @intCast(count)) * @as(i64, std.time.ns_per_s), ns) else 0 });
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -115,6 +198,12 @@ pub fn main(init: std.process.Init) !void {
     const token_s = it.next() orelse return error.BadArgs;
     const layers_s = it.next() orelse return error.BadArgs;
     const io = init.io;
+    if (std.mem.eql(u8, token_s, "spec")) {
+        const seed = try std.fmt.parseInt(usize, layers_s, 10);
+        const steps = try std.fmt.parseInt(usize, it.next() orelse return error.BadArgs, 10);
+        try specDecode(a, io, dir, seed, steps);
+        return;
+    }
     if (std.mem.eql(u8, token_s, "probe")) {
         const seed = try std.fmt.parseInt(usize, layers_s, 10);
         const steps = try std.fmt.parseInt(usize, it.next() orelse return error.BadArgs, 10);
