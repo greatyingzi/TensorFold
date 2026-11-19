@@ -23,9 +23,7 @@ pub fn propose(gpa: std.mem.Allocator, logits: []const f32, count: usize) ![]u32
     return out;
 }
 
-/// Propose candidates with the DFly2 drafter: one step over the session's captured
-/// target hiddens, then the shared lm_head picks the best tokens. The Drafter keeps its
-/// own KV across calls; the session's dump buffers must be armed for the target layers.
+/// Propose via the DFly2 drafter: one step over the session dump, lm_head picks the best.
 pub fn proposeDfly(gpa: std.mem.Allocator, c: *const @import("config.zig").Config, bag: *const @import("weights.zig").Bag, s: *session_mod.Session, dr: *dfly.Drafter, token: usize, out: []u32) !void {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();

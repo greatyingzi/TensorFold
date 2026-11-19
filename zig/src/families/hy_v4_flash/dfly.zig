@@ -1,4 +1,4 @@
-// ! DFly2 drafter over the checkpoint's real model.dfly_layers.N tensors: five dense ! blocks, each a gated MLA (32 heads, nope 192, rope 64, v 256, learned sink) with SwiGLU, ! chained over the main model's target-layer hiddens. The fusion of a target hidden with ! the draft stream is parameterized; the real-weight agreement probe picks the variant.
+//! DFly2 drafter over the checkpoint dfly_layers tensors: gated MLA blocks with sinks.
 const std = @import("std");
 const config = @import("config.zig");
 const weights = @import("weights.zig");
@@ -79,8 +79,7 @@ pub const Drafter = struct {
         return std.fmt.allocPrint(a, "dfly_layers.{d}.{s}", .{ li, suffix });
     }
 
-    /// One position: h_targets are the main model's collapsed hiddens entering the target
-    /// layers at this position (dfly.targets entries), embed_tok the anchor token's embedding.
+    /// One position: h_targets are the collapsed hiddens entering the target layers here.
     /// out receives the final draft hidden [hidden].
     pub fn step(self: *Drafter, h_targets: []const []const f32, embed_tok: []const f32, pos: usize, fusion: Fusion, out: []f32) !void {
         const c = self.c;
