@@ -48,6 +48,11 @@ pub const Session = struct {
     logits: []f32,
     last_hidden: []f32,
     pos: usize = 0,
+    /// Optional per-step capture of the collapsed hidden entering these layers (the dfly targets).
+    dump_layers: [8]u32 = @splat(0),
+    dump_n: usize = 0,
+    dump_buf: [8][]f32 = @splat(&.{}),
+    dump_hit: [8]bool = @splat(false),
 
     pub fn init(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weights.Bag, cap: usize) !Session {
         try graph.validate(c);
@@ -148,6 +153,14 @@ pub const Session = struct {
             const ag = try ihc.gates(gpa, c, self.bag, li, "attn_hc", self.streams[0..hc]);
             defer ihc.gatesDeinit(gpa, ag);
             try ihc.collapse(ag, self.streams[0..hc], mixed);
+            if (self.dump_n > 0) {
+                for (0..self.dump_n) |di| {
+                    if (self.dump_layers[di] == li and self.dump_buf[di].len == h) {
+                        @memcpy(self.dump_buf[di], mixed);
+                        self.dump_hit[di] = true;
+                    }
+                }
+            }
             const an = try named(a, "layers.{d}.input_layernorm.weight", .{li});
             try ops.rmsNorm(mixed, mixed, try f32s(self.bag, an), c.eps);
 
