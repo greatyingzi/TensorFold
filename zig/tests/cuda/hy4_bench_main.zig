@@ -22,7 +22,7 @@ pub fn main(init: std.process.Init) !u8 {
             return 0;
         }
         if (std.mem.eql(u8, args[1], "expertcheck")) {
-            try hy4_bench.expertCheck(gpu, args[2], try std.fmt.parseInt(usize, args[3], 10), try std.fmt.parseInt(usize, args[4], 10));
+            try hy4_bench.expertCheck(gpu, args[2], try std.fmt.parseInt(usize, args[3], 10), try std.fmt.parseInt(usize, args[4], 10), if (args.len > 5) args[5] else args[2]);
             return 0;
         }
         if (std.mem.eql(u8, args[1], "exl3experts")) {

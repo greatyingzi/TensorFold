@@ -30,6 +30,12 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 35 (single-expert kernel VERIFIED vs authoritative BF16)
+- expertcheck now carries an authoritative reference from the ORIGINAL BF16 source pack (`mlp.experts.gate_up_proj` [512,3072,1536]): **single-expert kernel output matches within 2–4%** (GPU max 0.465 vs ref 0.455; first element -0.097 vs -0.101) — 3bpw quantization noise. The earlier "dequantize" CPU reference was wrong (orientation bugs) and is discarded.
+- The MULTI zero in expertcheck was a harness bug: the Layer was built with experts=1 while picks referenced 223/395 — the kernel's e < experts guard dropped them. NOT the runner's failure mode.
+- Runner discrepancy remains: expert_out 0.0006 (small but nonzero) with 512 experts, real picks/weights. Narrowed suspects: multi-expert grouping with 512-entry pointer tables, stacked scales [512,1536], or the x_stride semantic (bytes vs elements) in ex.run.
+- Next: build a 4-expert harness (experts=4, pointer table + stacked scales) that reproduces the runner's small-but-nonzero output, then bisect: weight count (1 vs 16), distinct experts, stacked-scale layout.
+
 ## Progress round 34 (standalone expert numeric check online)
 - `hy4-gpu-bench expertcheck /pack 1 223`: single expert, weight 1.0 — the kernel's output has NORMAL magnitude (max 0.465), so the 1000x-small expert_out in the runner is a multi-expert/pick/wts path issue, not the GEMM scale.
 - My local CPU reference in expertcheck is untrustworthy (fused gate/up layout assumption + two orientation fixes already changed it 0.46→0.019); the decisive reference is the ORIGINAL BF16 source pack's expert weights (model.layers.1.mlp.experts.gate_up_proj.weight) — next round's first action.

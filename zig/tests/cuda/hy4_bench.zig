@@ -498,7 +498,7 @@ pub fn exl3Experts(gpu: Gpu, dir: []const u8, layer: usize) !void {
 
 
 /// Standalone numeric check of the shared expert kernel: one expert, weight 1, vs a CPU dequant matvec.
-pub fn expertCheck(gpu: Gpu, dir: []const u8, layer: usize, expert: usize) !void {
+pub fn expertCheck(gpu: Gpu, dir: []const u8, layer: usize, expert: usize, srcdir: []const u8) !void {
     var arena: std.heap.ArenaAllocator = .init(gpu.gpa);
     defer arena.deinit();
     const a = arena.allocator();
@@ -609,7 +609,6 @@ pub fn expertCheck(gpu: Gpu, dir: []const u8, layer: usize, expert: usize) !void
     for (out_host) |v| mx = @max(mx, @abs(v));
     std.debug.print("expertcheck: GPU out max|v| = {d:.5} first {d:.5} {d:.5}\n", .{ mx, out_host[0], out_host[1] });
 
-    // CPU reference: dequant gate_up and down, matvec, swiglu(limit), compare
     const fmt = @import("core").exl3_format;
     const gu_tr_host = try a.alloc(i16, gu_tr.shape[0] * gu_tr.shape[1] * gu_tr.shape[2]);
     @memcpy(std.mem.sliceAsBytes(gu_tr_host), gu_tr.bytes);
@@ -622,6 +621,99 @@ pub fn expertCheck(gpu: Gpu, dir: []const u8, layer: usize, expert: usize) !void
     fmt.dequantize(.{ .halves = @intCast(gu_tr.shape[2] / 8) }, .mul1, gu_tr_host, gu_tr.shape[0], gu_tr.shape[1], suh16, svh16, wq, scratch);
     const xf = try a.alloc(f32, dims);
     for (xf, 0..) |*v, i| v.* = @as(f32, @bitCast(@as(u32, xh[i]) << 16));
+    // Authoritative CPU reference: the ORIGINAL BF16 expert weights from the source pack.
+    const sidx_path = try std.fs.path.join(a, &.{ srcdir, "model.safetensors.index.json" });
+    const sidx_text = try std.Io.Dir.cwd().readFileAlloc(io, sidx_path, a, .limited(64 << 20));
+    var sdoc = try std.json.parseFromSlice(std.json.Value, a, sidx_text, .{});
+    const swm = sdoc.value.object.get("weight_map").?.object;
+    var sfiles = std.StringHashMap(*sf.File).init(a);
+    const gu_w = try tget(a, io, &sfiles, swm, srcdir, try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.gate_up_proj", .{layer}));
+    const dn_w = try tget(a, io, &sfiles, swm, srcdir, try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.down_proj", .{layer}));
+    // gu_w: [E, 3072, 1536] bf16 (rank 3); expert slice at expert*3072*1536.
+    std.debug.print("expertcheck src gu rank={d} shape={any} dn rank={d} shape={any}\n", .{ gu_w.rank, gu_w.shape[0..gu_w.rank], dn_w.rank, dn_w.shape[0..dn_w.rank] });
+    const gu_all = std.mem.bytesAsSlice(u16, gu_w.bytes);
+    const gu_e = gu_all[expert * 2 * width * dims ..][0 .. 2 * width * dims];
+    const dn_all = std.mem.bytesAsSlice(u16, dn_w.bytes);
+    const dn_e = dn_all[expert * dims * width ..][0 .. dims * width];
+    const bf = struct {
+        fn f(bits: u16) f32 {
+            return @bitCast(@as(u32, bits) << 16);
+        }
+    }.f;
+    const gu_out2 = try a.alloc(f32, 2 * width);
+    for (0..2 * width) |n| {
+        var acc: f64 = 0;
+        for (0..dims) |c| acc += @as(f64, bf(gu_e[n * dims + c])) * xf[c];
+        gu_out2[n] = @floatCast(acc);
+    }
+    const act2 = try a.alloc(f32, width);
+    for (0..width) |i| {
+        const g = @min(gu_out2[i], 10.0);
+        const u = @max(-10.0, @min(gu_out2[width + i], 10.0));
+        act2[i] = g / (1.0 + @exp(-g)) * u;
+    }
+    const ref2 = try a.alloc(f32, dims);
+    for (0..dims) |n| {
+        var acc: f64 = 0;
+        for (0..width) |c| acc += @as(f64, bf(dn_e[n * width + c])) * act2[c];
+        ref2[n] = @floatCast(acc);
+    }
+    var worst2: f32 = 0;
+    var mxr: f32 = 0;
+    for (0..dims) |i| {
+        worst2 = @max(worst2, @abs(out_host[i] - ref2[i]) / @max(1e-4, @abs(ref2[i])));
+        mxr = @max(mxr, @abs(ref2[i]));
+    }
+    std.debug.print("expertcheck BF16: ref max|v| = {d:.5} first {d:.5} {d:.5} worst_rel {d:.4}\n", .{ mxr, ref2[0], ref2[1], worst2 });
+
+    // Multi-expert check: the runner's real picks/weights for L1, vs the weighted BF16 sum.
+    const picks = [_]i32{ 223, 395, 382, 497 };
+    const ws = [_]f32{ 0.069, 0.064, 0.064, 0.064 };
+    const pick_m = try a.alloc(i32, slots);
+    @memset(pick_m, 0);
+    for (picks, 0..) |pv, i| pick_m[i] = pv;
+    var pickm_buf = cuda.memory.DeviceBuffer{ .d = gpu.d, .ptr = pick, .len = slots * 4 };
+    try pickm_buf.upload(0, std.mem.sliceAsBytes(pick_m));
+    const wts_m = try a.alloc(f32, slots);
+    @memset(wts_m, 0);
+    for (ws, 0..) |wv, i| wts_m[i] = wv;
+    var wtsm_buf = cuda.memory.DeviceBuffer{ .d = gpu.d, .ptr = wts, .len = slots * 4 };
+    try wtsm_buf.upload(0, std.mem.sliceAsBytes(wts_m));
+    try scb.fill8(0, s.handle);
+    try ex.run(s, L, x, dims, .bf16, pick, wts, rows, out, sc);
+    try s.synchronize();
+    var obm = cuda.memory.DeviceBuffer{ .d = gpu.d, .ptr = out, .len = dims * 4 };
+    const out_m = try a.alloc(f32, dims);
+    try obm.download(0, std.mem.sliceAsBytes(out_m));
+    var gmax: f32 = 0;
+    for (out_m) |v| gmax = @max(gmax, @abs(v));
+    // weighted BF16 reference over the 4 experts
+    const refm = try a.alloc(f32, dims);
+    @memset(refm, 0);
+    for (picks, 0..) |pe, pi| {
+        const ge = gu_all[@as(usize, @intCast(pe)) * 2 * width * dims ..][0 .. 2 * width * dims];
+        const de = dn_all[@as(usize, @intCast(pe)) * dims * width ..][0 .. dims * width];
+        const go = try a.alloc(f32, 2 * width);
+        for (0..2 * width) |n| {
+            var acc: f64 = 0;
+            for (0..dims) |c| acc += @as(f64, bf(ge[n * dims + c])) * xf[c];
+            go[n] = @floatCast(acc);
+        }
+        const ac = try a.alloc(f32, width);
+        for (0..width) |i| {
+            const g2 = @min(go[i], 10.0);
+            const uu2 = @max(-10.0, @min(go[width + i], 10.0));
+            ac[i] = g2 / (1.0 + @exp(-g2)) * uu2;
+        }
+        for (0..dims) |n| {
+            var acc: f64 = 0;
+            for (0..width) |c| acc += @as(f64, bf(de[n * width + c])) * ac[c];
+            refm[n] += ws[pi] * @as(f32, @floatCast(acc));
+        }
+    }
+    var rmax: f32 = 0;
+    for (refm) |v| rmax = @max(rmax, @abs(v));
+    std.debug.print("expertcheck MULTI: GPU max {d:.5} ref max {d:.5} first g {d:.5} r {d:.5}\n", .{ gmax, rmax, out_m[0], refm[0] });
     const gu_out = try a.alloc(f32, 2 * width);
     @memset(gu_out, 0);
     for (0..2 * width) |n| {
