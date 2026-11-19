@@ -189,7 +189,8 @@ fn loadInner(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const l
                     continue;
                 }
             }
-            if (t.dtype != want.dtype or !want.is(t.rank, t.shape[0..t.rank])) {
+            const dtype_ok = t.dtype == want.dtype or (t.dtype == .f16 and want.dtype == .bf16);
+            if (!dtype_ok or !want.is(t.rank, t.shape[0..t.rank])) {
                 std.debug.print("SHAPE_MISMATCH {s} dtype={s}/{s} rank={d}/{d} got={any} want={any}\n", .{ ckpt, @tagName(t.dtype), @tagName(want.dtype), t.rank, want.rank, t.shape[0..t.rank], want });
                 return error.Hy4TensorShapeMismatch;
             }
@@ -210,6 +211,15 @@ fn loadInner(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, meta: *const l
                         }
                         try out.map.put(key, .{ .name = key, .rank = t.rank, .shape = shape, .value = .{ .f32s = buf } });
                     }
+                },
+                .f16 => {
+                    const bytes = std.mem.sliceAsBytes(t.bytes);
+                    const buf = try a.alloc(f32, count);
+                    for (buf, 0..) |*v, i| {
+                        const bits = std.mem.readInt(u16, bytes[i * 2 ..][0..2], .little);
+                        v.* = @floatCast(@as(f16, @bitCast(bits)));
+                    }
+                    try out.map.put(key, .{ .name = key, .rank = t.rank, .shape = shape, .value = .{ .f32s = buf } });
                 },
                 .i32 => {
                     const buf = try a.alloc(i32, count);

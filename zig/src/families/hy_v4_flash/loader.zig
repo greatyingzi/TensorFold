@@ -111,18 +111,34 @@ pub fn inspect(gpa: std.mem.Allocator, io: std.Io, dir: []const u8) !Admission {
         defer sf.close(io);
         out.total_bytes += sf.map.memory.len;
         var tit = sf.names.iterator();
-        while (tit.next()) |_| out.tensors += 1;
+        while (tit.next()) |t| {
+            const n = t.key_ptr.*;
+            if (std.mem.endsWith(u8, n, ".trellis") or std.mem.endsWith(u8, n, ".suh") or
+                std.mem.endsWith(u8, n, ".svh") or std.mem.endsWith(u8, n, ".mcg") or
+                std.mem.endsWith(u8, n, ".mul1") or std.mem.endsWith(u8, n, ".inst3")) continue;
+            out.tensors += 1;
+        }
         if (out.meta.lookup_sha256.len == 0) {
             out.meta = metadata(a, io, path) catch EngramMeta{};
         }
         var it = wm.iterator();
         while (it.next()) |item| {
             if (!std.mem.eql(u8, item.value_ptr.string, entry.key_ptr.*)) continue;
+            const kn = item.key_ptr.*;
+            if (std.mem.endsWith(u8, kn, ".trellis") or std.mem.endsWith(u8, kn, ".suh") or
+                std.mem.endsWith(u8, kn, ".svh") or std.mem.endsWith(u8, kn, ".mcg") or
+                std.mem.endsWith(u8, kn, ".mul1") or std.mem.endsWith(u8, kn, ".inst3")) continue;
             const tensor = sf.get(item.key_ptr.*) orelse return error.IndexedTensorMissing;
             if (tensor.numel() * @as(usize, tensor.dtype.size()) != tensor.bytes.len) return error.BadSafetensors;
             const lookup_len: usize = if (out.meta.source_tokenizer_len > 0) out.meta.source_tokenizer_len else c.vocab;
             if (shapes.expected(&c, item.key_ptr.*, lookup_len)) |want_shape| {
-                if (tensor.dtype != want_shape.dtype) return error.UnsupportedHy4TensorDtype;
+                // The EXL3 converter stores a few unquantized modules as fp16 where the
+                // source checkpoint used bf16; both decode into f32 on load.
+                if (tensor.dtype != want_shape.dtype and
+                    !(tensor.dtype == .f16 and want_shape.dtype == .bf16)) {
+                    std.debug.print("LOADER_DTYPE {s}: got {s} want {s}\n", .{ item.key_ptr.*, @tagName(tensor.dtype), @tagName(want_shape.dtype) });
+                    return error.UnsupportedHy4TensorDtype;
+                }
                 if (!want_shape.is(tensor.rank, tensor.shape[0..tensor.rank]) and
                     !(std.mem.endsWith(u8, item.key_ptr.*, "engram_layer.lookup_table") and tensor.dtype == .i32 and tensor.rank == 1)) {
                     std.debug.print("LOADER_MISMATCH {s} got rank={d} shape={any}\n", .{ item.key_ptr.*, tensor.rank, tensor.shape[0..tensor.rank] });
