@@ -58,9 +58,7 @@ fn make(r: *Rig, name: []const u8, n: usize, k: usize, rows: usize) !Proj {
 }
 
 
-/// Full 42-layer decode step on the GPU at Hy4 geometry: the assembly receipt.
-/// Weights are random affine-4 (the kernels are memory-bound, so timing carries),
-/// attention runs the shared mla kernels over a paged latent cache.
+/// Full 42-layer decode step at Hy4 geometry: random affine-4 weights (kernels are memory-bound).
 pub fn forwardBench(gpu: Gpu) !void {
     var arena: std.heap.ArenaAllocator = .init(gpu.gpa);
     defer arena.deinit();
