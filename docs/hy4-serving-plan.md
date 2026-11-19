@@ -30,6 +30,11 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 34 (standalone expert numeric check online)
+- `hy4-gpu-bench expertcheck /pack 1 223`: single expert, weight 1.0 — the kernel's output has NORMAL magnitude (max 0.465), so the 1000x-small expert_out in the runner is a multi-expert/pick/wts path issue, not the GEMM scale.
+- My local CPU reference in expertcheck is untrustworthy (fused gate/up layout assumption + two orientation fixes already changed it 0.46→0.019); the decisive reference is the ORIGINAL BF16 source pack's expert weights (model.layers.1.mlp.experts.gate_up_proj.weight) — next round's first action.
+- Serve note: hy4serve35 exited (137) during the long debug; the serve restarts cleanly from the same image.
+
 ## Progress round 33 (bug localized inside the expert kernel call)
 - latent_in at L1 is normal magnitude (-0.074, 0.080) — routed_down decode is correct. The expert output is ~1000x too small (0.0006 in, expected O(0.1)): the bug is inside the ex.run invocation, not the surrounding glue.
 - Prime suspects: (a) gate and up trellis pointers ALIASED to the same fused gate_up trellis with gu_stride=96 — the kernel may expect two separate contiguous projections; (b) act_mode=1 semantics (try 0); (c) the suh/svh stacking layout [E, k] vs the kernel's expectation; (d) HAD_SCALE compensation chain in rot_in/grouped/down epilogues.

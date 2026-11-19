@@ -21,6 +21,10 @@ pub fn main(init: std.process.Init) !u8 {
             try hy4_bench.packCheck(gpu, args[2]);
             return 0;
         }
+        if (std.mem.eql(u8, args[1], "expertcheck")) {
+            try hy4_bench.expertCheck(gpu, args[2], try std.fmt.parseInt(usize, args[3], 10), try std.fmt.parseInt(usize, args[4], 10));
+            return 0;
+        }
         if (std.mem.eql(u8, args[1], "exl3experts")) {
             try hy4_bench.exl3Experts(gpu, args[2], try std.fmt.parseInt(usize, args[3], 10));
             return 0;

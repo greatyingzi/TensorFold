@@ -496,6 +496,166 @@ pub fn exl3Experts(gpu: Gpu, dir: []const u8, layer: usize) !void {
     std.debug.print("exl3experts L{d}: {d} real 3bpw experts, {d:.3} ms/token = {d:.1} tok/s\n", .{ layer, E, ms, 1000.0 / ms });
 }
 
+
+/// Standalone numeric check of the shared expert kernel: one expert, weight 1, vs a CPU dequant matvec.
+pub fn expertCheck(gpu: Gpu, dir: []const u8, layer: usize, expert: usize) !void {
+    var arena: std.heap.ArenaAllocator = .init(gpu.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = gpu.io;
+    const sf = @import("core").safetensors;
+    const idx_path = try std.fs.path.join(a, &.{ dir, "model.safetensors.index.json" });
+    const idx_text = try std.Io.Dir.cwd().readFileAlloc(io, idx_path, a, .limited(64 << 20));
+    var doc = try std.json.parseFromSlice(std.json.Value, a, idx_text, .{});
+    const wm = doc.value.object.get("weight_map").?.object;
+
+    const dims: usize = 1536;
+    const width: usize = 1536;
+    const slots: usize = 16;
+    var s = try cuda.Stream.init(gpu.d, false);
+    defer s.deinit();
+
+    // load expert's gate_up + down tensors
+    const gu_tr_name = try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.gate_up.{d}.trellis", .{ layer, expert });
+    const dn_tr_name = try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.down.{d}.trellis", .{ layer, expert });
+    var files = std.StringHashMap(*sf.File).init(a);
+    const tget = struct {
+        fn get(al: std.mem.Allocator, io2: std.Io, fmap: *std.StringHashMap(*sf.File), wmap: std.json.ObjectMap, d: []const u8, nm: []const u8) !sf.Tensor {
+            const sh = wmap.get(nm) orelse return error.MissingExl3Tensor;
+            const file = fmap.get(sh.string) orelse blk: {
+                const path = try std.fs.path.join(al, &.{ d, sh.string });
+                const ptr = try al.create(sf.File);
+                ptr.* = try sf.File.open(al, io2, path);
+                try fmap.put(sh.string, ptr);
+                break :blk ptr;
+            };
+            return file.get(nm) orelse error.MissingExl3Tensor;
+        }
+    }.get;
+    const gu_tr = try tget(a, io, &files, wm, dir, gu_tr_name);
+    const gu_su = try tget(a, io, &files, wm, dir, try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.gate_up.{d}.suh", .{ layer, expert }));
+    const gu_sv = try tget(a, io, &files, wm, dir, try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.gate_up.{d}.svh", .{ layer, expert }));
+    const dn_tr = try tget(a, io, &files, wm, dir, dn_tr_name);
+    const dn_su = try tget(a, io, &files, wm, dir, try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.down.{d}.suh", .{ layer, expert }));
+    const dn_sv = try tget(a, io, &files, wm, dir, try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.down.{d}.svh", .{ layer, expert }));
+    std.debug.print("expertcheck: gu trellis {any} dn trellis {any}\n", .{ gu_tr.shape[0..3], dn_tr.shape[0..3] });
+
+    // upload as a 1-expert layer
+    var up = cuda.exl3_upload.Uploader{ .d = gpu.d, .gpa = a, .max_buffers = 64 };
+    defer up.deinit();
+    const gu_suh = try a.alloc(u8, dims * 2);
+    @memcpy(gu_suh, gu_su.bytes);
+    const gu_svh = try a.alloc(u8, 2 * width * 2);
+    @memcpy(gu_svh, gu_sv.bytes);
+    const dn_suh = try a.alloc(u8, width * 2);
+    @memcpy(dn_suh, dn_su.bytes);
+    const dn_svh = try a.alloc(u8, dims * 2);
+    @memcpy(dn_svh, dn_sv.bytes);
+    const k2 = try a.alloc(i32, 1);
+    k2[0] = @intCast(gu_tr.shape[2] / 8);
+    const L: cuda.exl3_experts.Layer = .{
+        .gate = try up.dev(std.mem.sliceAsBytes(&[_]u64{try up.dev(gu_tr.bytes)})),
+        .up = try up.dev(std.mem.sliceAsBytes(&[_]u64{try up.dev(gu_tr.bytes)})),
+        .down = try up.dev(std.mem.sliceAsBytes(&[_]u64{try up.dev(dn_tr.bytes)})),
+        .gate_k2 = try up.dev(std.mem.sliceAsBytes(k2)),
+        .up_k2 = try up.dev(std.mem.sliceAsBytes(k2)),
+        .down_k2 = try up.dev(std.mem.sliceAsBytes(k2)),
+        .suh_g = try up.dev(gu_suh),
+        .suh_u = try up.dev(gu_suh),
+        .svh_g = try up.dev(gu_svh),
+        .svh_u = try up.dev(gu_svh),
+        .suh_d = try up.dev(dn_suh),
+        .svh_d = try up.dev(dn_svh),
+        .experts = 1,
+        .dims = dims,
+        .width = width,
+        .codebook = .mul1,
+        .uniform_k2 = @intCast(gu_tr.shape[2] / 8),
+        .gu_stride = width / 16,
+        .limit = 10.0,
+        .act_mode = 0,
+    };
+    const rows: usize = 1;
+    const xh = try a.alloc(u16, dims);
+    var prng = std.Random.DefaultPrng.init(9);
+    for (xh) |*v| {
+        const f: f32 = prng.random().float(f32) * 2.0 - 1.0;
+        const bits: u32 = @bitCast(f);
+        v.* = @truncate(bits >> 16);
+    }
+    const x = try up.dev(std.mem.sliceAsBytes(xh));
+    const pick_host = try a.alloc(i32, slots);
+    pick_host[0] = 0;
+    for (pick_host[1..]) |*v| v.* = 0;
+    const pick = try up.dev(std.mem.sliceAsBytes(pick_host));
+    const wts_host = try a.alloc(f32, slots);
+    wts_host[0] = 1.0;
+    for (wts_host[1..]) |*v| v.* = 0.0;
+    const wts = try up.dev(std.mem.sliceAsBytes(wts_host));
+    const out = try up.dev(try a.alloc(u8, rows * dims * 4));
+    const sc_bytes = try cuda.exl3_experts.scratchBytes(L, rows, slots);
+    var scb = try cuda.memory.DeviceBuffer.alloc(gpu.d, sc_bytes);
+    defer scb.free();
+    try scb.fill8(0, s.handle);
+    const sc = try cuda.exl3_experts.scratch(scb.ptr, L, rows, slots);
+    var ex = try cuda.exl3_experts.Experts.load(gpu.d);
+    defer ex.unload();
+    try ex.run(s, L, x, dims, .bf16, pick, wts, rows, out, sc);
+    try s.synchronize();
+    const out_host = try a.alloc(f32, dims);
+    var ob = cuda.memory.DeviceBuffer{ .d = gpu.d, .ptr = out, .len = dims * 4 };
+    try ob.download(0, std.mem.sliceAsBytes(out_host));
+    var mx: f32 = 0;
+    for (out_host) |v| mx = @max(mx, @abs(v));
+    std.debug.print("expertcheck: GPU out max|v| = {d:.5} first {d:.5} {d:.5}\n", .{ mx, out_host[0], out_host[1] });
+
+    // CPU reference: dequant gate_up and down, matvec, swiglu(limit), compare
+    const fmt = @import("core").exl3_format;
+    const gu_tr_host = try a.alloc(i16, gu_tr.shape[0] * gu_tr.shape[1] * gu_tr.shape[2]);
+    @memcpy(std.mem.sliceAsBytes(gu_tr_host), gu_tr.bytes);
+    const suh16 = try a.alloc(f16, dims);
+    @memcpy(std.mem.sliceAsBytes(suh16), gu_su.bytes);
+    const svh16 = try a.alloc(f16, 2 * width);
+    @memcpy(std.mem.sliceAsBytes(svh16), gu_sv.bytes);
+    const wq = try a.alloc(f64, 2 * width * dims);
+    const scratch = try a.alloc(f64, 2 * 2 * width * dims);
+    fmt.dequantize(.{ .halves = @intCast(gu_tr.shape[2] / 8) }, .mul1, gu_tr_host, gu_tr.shape[0], gu_tr.shape[1], suh16, svh16, wq, scratch);
+    const xf = try a.alloc(f32, dims);
+    for (xf, 0..) |*v, i| v.* = @as(f32, @bitCast(@as(u32, xh[i]) << 16));
+    const gu_out = try a.alloc(f32, 2 * width);
+    @memset(gu_out, 0);
+    for (0..2 * width) |n| {
+        var acc: f64 = 0;
+        for (0..dims) |c| acc += wq[c * (2 * width) + n] * xf[c];
+        gu_out[n] = @floatCast(acc);
+    }
+    const act = try a.alloc(f32, width);
+    for (0..width) |i| {
+        const g = @min(gu_out[i], 10.0);
+        const u = @max(-10.0, @min(gu_out[width + i], 10.0));
+        act[i] = g / (1.0 + @exp(-g)) * u;
+    }
+    // down: [dims, width]
+    const dn_tr_host = try a.alloc(i16, dn_tr.shape[0] * dn_tr.shape[1] * dn_tr.shape[2]);
+    @memcpy(std.mem.sliceAsBytes(dn_tr_host), dn_tr.bytes);
+    const dsuh = try a.alloc(f16, width);
+    @memcpy(std.mem.sliceAsBytes(dsuh), dn_su.bytes);
+    const dsvh = try a.alloc(f16, dims);
+    @memcpy(std.mem.sliceAsBytes(dsvh), dn_sv.bytes);
+    const wq2 = try a.alloc(f64, dims * width);
+    const scratch2 = try a.alloc(f64, 2 * dims * width);
+    fmt.dequantize(.{ .halves = @intCast(dn_tr.shape[2] / 8) }, .mul1, dn_tr_host, dn_tr.shape[0], dn_tr.shape[1], dsuh, dsvh, wq2, scratch2);
+    const ref = try a.alloc(f32, dims);
+    for (0..dims) |n| {
+        var acc: f64 = 0;
+        for (0..width) |c| acc += wq2[c * dims + n] * act[c];
+        ref[n] = @floatCast(acc);
+    }
+    var worst: f32 = 0;
+    for (0..dims) |i| worst = @max(worst, @abs(out_host[i] - ref[i]) / @max(1e-4, @abs(ref[i])));
+    std.debug.print("expertcheck: CPU ref max|v| = {d:.5} first {d:.5} {d:.5} worst_rel {d:.4}\n", .{ @abs(ref[0]), ref[0], ref[1], worst });
+}
+
 fn bfOfHost(bits: u16) f32 {
     return @bitCast(@as(u32, bits) << 16);
 }
