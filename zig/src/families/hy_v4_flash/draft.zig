@@ -4,6 +4,7 @@
 const std = @import("std");
 const spec = @import("spec.zig");
 const session_mod = @import("session.zig");
+const dfly = @import("dfly.zig");
 
 /// Propose `count` tokens from the target logits, best first.
 pub fn propose(gpa: std.mem.Allocator, logits: []const f32, count: usize) ![]u32 {
@@ -22,9 +23,51 @@ pub fn propose(gpa: std.mem.Allocator, logits: []const f32, count: usize) ![]u32
     return out;
 }
 
-/// Propose candidates with the DFly2 draft block from the target's final hidden state.
-pub fn proposeDfly(gpa: std.mem.Allocator, c: *const @import("config.zig").Config, bag: *const @import("weights.zig").Bag, s: *session_mod.Session, token: usize, out: []u32) !void {
-    try @import("dfly.zig").draft(gpa, c, bag, s.last_hidden, token, s.pos, out);
+/// Propose candidates with the DFly2 drafter: one step over the session's captured
+/// target hiddens, then the shared lm_head picks the best tokens. The Drafter keeps its
+/// own KV across calls; the session's dump buffers must be armed for the target layers.
+pub fn proposeDfly(gpa: std.mem.Allocator, c: *const @import("config.zig").Config, bag: *const @import("weights.zig").Bag, s: *session_mod.Session, dr: *dfly.Drafter, token: usize, out: []u32) !void {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const h = c.hidden;
+    var targets: []const []const f32 = &.{};
+    if (s.dump_n > 0) targets = s.dump_buf[0..s.dump_n];
+    const embed = try embedRow(a, bag, token, h);
+    const hidden = try a.alloc(f32, h);
+    try dr.step(targets, embed, s.pos, .sum_chain, hidden);
+    const logits = try a.alloc(f32, c.vocab);
+    try headMatvec(logits, bag, hidden, c.vocab, h);
+    const best = try propose(gpa, logits, out.len);
+    defer gpa.free(best);
+    @memcpy(out, best);
+}
+
+fn embedRow(a: std.mem.Allocator, bag: *const @import("weights.zig").Bag, token: usize, h: usize) ![]const f32 {
+    const t = bag.get("embed_tokens.weight") orelse return error.MissingHy4Tensor;
+    const out = try a.alloc(f32, h);
+    switch (t.value) {
+        .f32s => |v| @memcpy(out, v[token * h ..][0..h]),
+        .bf16raw => |v| {
+            const base = token * h * 2;
+            for (0..h) |i| {
+                const bits = std.mem.readInt(u16, v[base + i * 2 ..][0..2], .little);
+                out[i] = @bitCast(@as(u32, bits) << 16);
+            }
+        },
+        .i32s, .affine4 => return error.ExpectedF32Tensor,
+    }
+    return out;
+}
+
+fn headMatvec(y: []f32, bag: *const @import("weights.zig").Bag, x: []const f32, rows: usize, cols: usize) !void {
+    const ops = @import("ops.zig");
+    const t = bag.get("lm_head.weight") orelse return error.MissingHy4Tensor;
+    switch (t.value) {
+        .f32s => |v| try ops.matvec(y, v, x, rows, cols),
+        .bf16raw => |v| try ops.matvecBf16(y, v, x, rows, cols),
+        .i32s, .affine4 => return error.ExpectedF32Tensor,
+    }
 }
 
 /// Verify drafts against the target: accept while each draft equals the target's greedy pick.
@@ -81,10 +124,12 @@ test "hy4 host: DFly2 drafts verify as the plain continuation" {
     const c = try config_parse(gpa);
     var s = try session_mod.Session.init(gpa, &c, &bag, 4);
     defer s.deinit();
+    var dr = try dfly.Drafter.init(gpa, &c, &bag, 4);
+    defer dr.deinit();
     const logits = try s.step(1);
     const drafts = try gpa.alloc(u32, c.dfly.drafts);
     defer gpa.free(drafts);
-    try proposeDfly(gpa, &c, &bag, &s, 1, drafts);
+    try proposeDfly(gpa, &c, &bag, &s, &dr, 1, drafts);
     const n = try verify(&s, logits, drafts);
     try std.testing.expect(n <= drafts.len);
     var plain = try session_mod.Session.init(gpa, &c, &bag, 4);

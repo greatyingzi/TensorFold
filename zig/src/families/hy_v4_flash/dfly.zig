@@ -1,143 +1,214 @@
-//! DFly2 draft block forward over the checkpoint's dfly_layers weights.
-
-// Scope: structural port from weight shapes and llama.cpp's extra sparse block contract.
-
-// No official forward is published, so this is a fidelity candidate, not a verified reference.
+//! DFly2 drafter over the checkpoint's real model.dfly_layers.N tensors: five dense
+//! blocks, each a gated MLA (32 heads, nope 192, rope 64, v 256, learned sink) with SwiGLU,
+//! chained over the main model's target-layer hiddens. The fusion of a target hidden with
+//! the draft stream is parameterized; the real-weight agreement probe picks the variant.
 const std = @import("std");
 const config = @import("config.zig");
 const weights = @import("weights.zig");
 const ops = @import("ops.zig");
 const rotary = @import("rotary.zig");
+const moe_unused = @import("moe.zig");
+const ops_mod = @import("ops.zig");
 
 fn f32s(bag: *const weights.Bag, name: []const u8) ![]const f32 {
     const t = bag.get(name) orelse return error.MissingHy4Tensor;
     return switch (t.value) {
         .f32s => |v| v,
-        .i32s, .affine4 => error.ExpectedF32Tensor,
-        .bf16raw => return error.ExpectedF32Tensor,
+        .i32s, .affine4, .bf16raw => error.ExpectedF32Tensor,
     };
 }
 
 fn matvecW(y: []f32, bag: *const weights.Bag, name: []const u8, x: []const f32, rows: usize, cols: usize) !void {
     const t = bag.get(name) orelse return error.MissingHy4Tensor;
     switch (t.value) {
-        .f32s => |v| try ops.matvec(y, v, x, rows, cols),
-        .bf16raw => |v| try ops.matvecBf16(y, v, x, rows, cols),
+        .f32s => |v| try ops_mod.matvec(y, v, x, rows, cols),
+        .bf16raw => |v| try ops_mod.matvecBf16(y, v, x, rows, cols),
         .i32s, .affine4 => return error.ExpectedF32Tensor,
     }
 }
 
-fn nm(a: std.mem.Allocator, comptime fmt: []const u8, args: anytype) ![]u8 {
-    return std.fmt.allocPrint(a, fmt, args);
-}
+/// The draft's attention target set: sum the target hidden into the stream, or targets only.
+pub const Fusion = enum { sum_chain, target_only };
 
-/// Produce `count` draft tokens from the target's final hidden state and the last token embedding.
-pub fn draft(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weights.Bag, hidden: []const f32, token: usize, pos: usize, out: []u32) !void {
-    if (hidden.len != c.hidden or out.len != c.dfly.drafts) return error.BadDraftShape;
-    var arena = std.heap.ArenaAllocator.init(gpa);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const h = c.hidden;
-    const q = c.q_lora;
-    const heads = c.heads;
-    const nope = c.qk_nope;
-    const rope = c.qk_rope;
-    const vdim = c.v_dim;
-    const kv_a_len = c.kv_lora + rope;
-    const kv_b_len = heads * (nope + vdim);
+/// Per-layer causal KV: k_nope [cap][heads*nope], k_rope and v likewise (rope MQA-expanded).
+const Kv = struct {
+    k_nope: []f32 = &.{},
+    k_rope: []f32 = &.{},
+    v: []f32 = &.{},
+    len: usize = 0,
 
-    const embed = try f32s(bag, "embed_tokens.weight");
-    if (embed.len != c.vocab * h) return error.BadDraftShape;
-    const fused = try a.alloc(f32, 2 * h);
-    @memcpy(fused[0..h], hidden);
-    @memcpy(fused[h..], embed[token * h ..][0..h]);
-    const state = try a.alloc(f32, h);
-    const eh = try nm(a, "dfly_layers.mtp_fusion.eh_proj.weight", .{});
-    try matvecW(state, bag, eh, fused, h, 2 * h);
-    const enorm = try f32s(bag, "dfly_layers.mtp_fusion.enorm.weight");
-    const hnorm = try f32s(bag, "dfly_layers.mtp_fusion.hnorm.weight");
-    const gate0 = try f32s(bag, "dfly_layers.mtp_fusion.gate");
-    if (enorm.len != h or hnorm.len != h or gate0.len != h) return error.BadDraftShape;
-    for (state, enorm, hnorm, gate0) |*v, e, n, g| v.* = v.* * e * n * ops.sigmoid(g);
-
-    const tmp = try a.alloc(f32, h);
-    const qa = try a.alloc(f32, q);
-    const qn = try a.alloc(f32, q);
-    const qb = try a.alloc(f32, heads * (nope + rope));
-    const kva = try a.alloc(f32, kv_a_len);
-    const kvn = try a.alloc(f32, c.kv_lora);
-    const kvb = try a.alloc(f32, kv_b_len);
-    const ctx = try a.alloc(f32, heads * vdim);
-    const cos = try a.alloc(f32, rope);
-    const sin = try a.alloc(f32, rope);
-    const gu = try a.alloc(f32, 3 * h);
-    const up = try a.alloc(f32, 3 * h);
-    const hc_up = try a.alloc(f32, h);
-    for (0..c.dfly.layers) |li| {
-        const ln = try nm(a, "dfly_layers.{d}.input_layernorm.weight", .{li});
-        try ops.rmsNorm(tmp, state, try f32s(bag, ln), c.eps);
-        const qan = try nm(a, "dfly_layers.{d}.self_attn.q_a_proj.weight", .{li});
-        const qal = try nm(a, "dfly_layers.{d}.self_attn.q_a_layernorm.weight", .{li});
-        const qbn = try nm(a, "dfly_layers.{d}.self_attn.q_b_proj.weight", .{li});
-        try matvecW(qa, bag, qan, tmp, q, h);
-        try ops.rmsNorm(qn, qa, try f32s(bag, qal), c.eps);
-        try matvecW(qb, bag, qbn, qn, heads * (nope + rope), q);
-        try rotary.cosSin(c, .sparse, @intCast(pos + li), cos, sin);
-        for (0..heads) |hh| try rotary.apply(qb[hh * (nope + rope) ..][0 .. nope + rope], cos, sin, rope);
-        const kan = try nm(a, "dfly_layers.{d}.self_attn.kv_a_proj_with_mqa.weight", .{li});
-        const kal = try nm(a, "dfly_layers.{d}.self_attn.kv_a_layernorm.weight", .{li});
-        const kbn = try nm(a, "dfly_layers.{d}.self_attn.kv_b_proj.weight", .{li});
-        try matvecW(kva, bag, kan, tmp, kv_a_len, h);
-        try ops.rmsNorm(kvn, kva[0..c.kv_lora], try f32s(bag, kal), c.eps);
-        try matvecW(kvb, bag, kbn, kvn, kv_b_len, c.kv_lora);
-        for (0..heads) |hh| @memcpy(ctx[hh * vdim ..][0..vdim], kvb[hh * (nope + vdim) + nope ..][0..vdim]);
-        const on = try nm(a, "dfly_layers.{d}.self_attn.o_proj.weight", .{li});
-        const attn = try a.alloc(f32, h);
-        try matvecW(attn, bag, on, ctx, h, heads * vdim);
-        for (state, attn) |*v, x| v.* += x;
-
-        const sg = "dfly_layers.hidden_correction.gate_proj.weight";
-        const su = "dfly_layers.hidden_correction.up_proj.weight";
-        const sd = "dfly_layers.hidden_correction.down_proj.weight";
-        const hci = try a.alloc(f32, h);
-        const hc_in = try a.alloc(f32, 2 * h);
-        @memset(hc_in, 0);
-        @memcpy(hc_in[0..h], state);
-        try matvecW(hci, bag, sg, hc_in, h, 2 * h);
-        try matvecW(hc_up, bag, su, hc_in, h, 2 * h);
-        for (hci, hc_up) |*v, x| v.* = v.* * ops.sigmoid(v.*) * x;
-        try matvecW(tmp, bag, sd, hci, h, h);
-        for (state, tmp) |*v, x| v.* += x;
-
-        const pn = try nm(a, "dfly_layers.{d}.post_attention_layernorm.weight", .{li});
-        try ops.rmsNorm(tmp, state, try f32s(bag, pn), c.eps);
-        const g1 = try nm(a, "dfly_layers.{d}.mlp.gate_proj.weight", .{li});
-        const upname = try nm(a, "dfly_layers.{d}.mlp.up_proj.weight", .{li});
-        const d1 = try nm(a, "dfly_layers.{d}.mlp.down_proj.weight", .{li});
-        try matvecW(gu, bag, g1, tmp, 3 * h, h);
-        try matvecW(up, bag, upname, tmp, 3 * h, h);
-        for (gu, up) |*v, x| v.* = v.* * ops.sigmoid(v.*) * x;
-        try matvecW(tmp, bag, d1, gu, h, 3 * h);
-        for (state, tmp) |*v, x| v.* += x;
+    fn init(gpa: std.mem.Allocator, cap: usize, heads: usize, nope: usize, rope: usize, vdim: usize) !Kv {
+        const n = try gpa.alloc(f32, cap * heads * nope);
+        const r = try gpa.alloc(f32, cap * heads * rope);
+        const v = try gpa.alloc(f32, cap * heads * vdim);
+        return .{ .k_nope = n, .k_rope = r, .v = v };
     }
-    try ops.rmsNorm(tmp, state, try f32s(bag, "dfly_layers.final_norm.weight"), c.eps);
-    const head = try a.alloc(f32, 1);
-    try matvecW(head, bag, "dfly_layers.confidence_head.proj.weight", tmp, 1, h);
-    for (0..out.len) |i| out[i] = @intCast(i);
-    _ = head[0];
+    fn deinit(self: *Kv, gpa: std.mem.Allocator) void {
+        gpa.free(self.k_nope);
+        gpa.free(self.k_rope);
+        gpa.free(self.v);
+    }
 
-}
+    fn append(self: *Kv, k_nope: []const f32, k_rope: []const f32, v: []const f32) void {
+        const heads_rows = k_nope.len;
+        @memcpy(self.k_nope[self.len * heads_rows ..][0..heads_rows], k_nope);
+        @memcpy(self.k_rope[self.len * k_rope.len ..][0..k_rope.len], k_rope);
+        @memcpy(self.v[self.len * v.len ..][0..v.len], v);
+        self.len += 1;
+    }
+};
 
-test "hy4 host: DFly2 draft block produces configured number of candidates" {
-    const gpa = std.testing.allocator;
-    var bag = try weights.load(gpa, std.testing.io, "zig/src/families/hy_v4_flash/fixtures/synthetic", &.{});
-    defer bag.deinit();
-    const c = try config.parse(gpa, @embedFile("config_synthetic_fixture.json"));
-    const hidden = try gpa.alloc(f32, c.hidden);
-    defer gpa.free(hidden);
-    @memset(hidden, 0.1);
-    const out = try gpa.alloc(u32, c.dfly.drafts);
-    defer gpa.free(out);
-    try draft(gpa, &c, &bag, hidden, 1, 0, out);
-    for (out) |v| try std.testing.expect(v < c.vocab);
-}
+pub const Drafter = struct {
+    gpa: std.mem.Allocator,
+    c: *const config.Config,
+    bag: *const weights.Bag,
+    kv: [8]Kv = @splat(.{}),
+    len: usize = 0,
+
+    pub fn init(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weights.Bag, cap: usize) !Drafter {
+        var d: Drafter = .{ .gpa = gpa, .c = c, .bag = bag };
+        for (0..c.dfly.layers) |li| {
+            d.kv[li] = try Kv.init(gpa, cap, c.swa_heads, c.swa_qk_nope, c.swa_qk_rope, c.swa_v_dim);
+        }
+        return d;
+    }
+
+    pub fn deinit(self: *Drafter) void {
+        for (0..self.c.dfly.layers) |li| self.kv[li].deinit(self.gpa);
+    }
+
+    fn nm(self: *const Drafter, a: std.mem.Allocator, li: usize, suffix: []const u8) ![]const u8 {
+        _ = self;
+        return std.fmt.allocPrint(a, "dfly_layers.{d}.{s}", .{ li, suffix });
+    }
+
+    /// One position: h_targets are the main model's collapsed hiddens entering the target
+    /// layers at this position (dfly.targets entries), embed_tok the anchor token's embedding.
+    /// out receives the final draft hidden [hidden].
+    pub fn step(self: *Drafter, h_targets: []const []const f32, embed_tok: []const f32, pos: usize, fusion: Fusion, out: []f32) !void {
+        const c = self.c;
+        const gpa = self.gpa;
+        var arena = std.heap.ArenaAllocator.init(gpa);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const h = c.hidden;
+        const heads = c.swa_heads;
+        const nope = c.swa_qk_nope;
+        const rope = c.swa_qk_rope;
+        const vdim = c.swa_v_dim;
+        const q_lora = c.q_lora;
+        const inter = 3 * c.hidden;
+        if (out.len != h or embed_tok.len != h or h_targets.len != 0 and h_targets[0].len != h) return error.BadDraftShape;
+
+        var stream = try a.alloc(f32, h);
+        @memcpy(stream, embed_tok);
+
+        const tmp = try a.alloc(f32, h);
+        const fused = try a.alloc(f32, h);
+        const qa = try a.alloc(f32, q_lora);
+        const qn = try a.alloc(f32, q_lora);
+        const qbuf = try a.alloc(f32, heads * (nope + rope));
+        const q_nope = try a.alloc(f32, heads * nope);
+        const q_rope = try a.alloc(f32, heads * rope);
+        const kva = try a.alloc(f32, c.kv_lora + rope);
+        const kvn = try a.alloc(f32, c.kv_lora);
+        const kvb = try a.alloc(f32, heads * (nope + vdim));
+        const k_rope = try a.alloc(f32, heads * rope);
+        const gate = try a.alloc(f32, heads * vdim);
+        const ctx = try a.alloc(f32, heads * vdim);
+        const cos = try a.alloc(f32, rope);
+        const sin = try a.alloc(f32, rope);
+        const scores = try a.alloc(f32, self.len + 2);
+        const gu = try a.alloc(f32, inter);
+        const up = try a.alloc(f32, inter);
+
+        for (0..c.dfly.layers) |li| {
+            const target = if (li < h_targets.len) h_targets[li] else stream;
+            switch (fusion) {
+                .sum_chain => {
+                    for (0..h) |i| fused[i] = target[i] + stream[i];
+                },
+                .target_only => {
+                    @memcpy(fused, target);
+                },
+            }
+            const ln1 = try self.nm(a, li, "input_layernorm.weight");
+            try ops.rmsNorm(tmp, fused, try f32s(self.bag, ln1), c.eps);
+
+            try matvecW(qa, self.bag, try self.nm(a, li, "self_attn.q_a_proj.weight"), tmp, q_lora, h);
+            try ops.rmsNorm(qn, qa, try f32s(self.bag, try self.nm(a, li, "self_attn.q_a_layernorm.weight")), c.eps);
+            try matvecW(qbuf, self.bag, try self.nm(a, li, "self_attn.q_b_proj.weight"), qn, heads * (nope + rope), q_lora);
+            try rotary.cosSin(c, .sliding, @intCast(pos), cos, sin);
+            for (0..heads) |hh| {
+                const qh = qbuf[hh * (nope + rope) ..][0 .. nope + rope];
+                try rotary.apply(qh, cos, sin, rope);
+                @memcpy(q_nope[hh * nope ..][0..nope], qh[0..nope]);
+                @memcpy(q_rope[hh * rope ..][0..rope], qh[nope..][0..rope]);
+            }
+
+            try matvecW(kva, self.bag, try self.nm(a, li, "self_attn.kv_a_proj_with_mqa.weight"), tmp, c.kv_lora + rope, h);
+            try ops.rmsNorm(kvn, kva[0..c.kv_lora], try f32s(self.bag, try self.nm(a, li, "self_attn.kv_a_layernorm.weight")), c.eps);
+            try matvecW(kvb, self.bag, try self.nm(a, li, "self_attn.kv_b_proj.weight"), kvn, heads * (nope + vdim), c.kv_lora);
+            for (0..heads) |hh| @memcpy(k_rope[hh * rope ..][0..rope], kva[c.kv_lora..][0..rope]);
+            const kn_all = try a.alloc(f32, heads * nope);
+            const v_all = try a.alloc(f32, heads * vdim);
+            for (0..heads) |hh| {
+                @memcpy(kn_all[hh * nope ..][0..nope], kvb[hh * (nope + vdim) ..][0..nope]);
+                @memcpy(v_all[hh * vdim ..][0..vdim], kvb[hh * (nope + vdim) + nope ..][0..vdim]);
+            }
+            self.kv[li].append(kn_all, k_rope, v_all);
+
+            // scores with the learned sink as an extra softmax column, as the main attention
+            const sink = try f32s(self.bag, try self.nm(a, li, "self_attn.sinks"));
+            try matvecW(gate, self.bag, try self.nm(a, li, "self_attn.gate_proj.weight"), tmp, heads * vdim, h);
+            const scale = 1.0 / @sqrt(@as(f32, @floatFromInt(nope + rope)));
+            // attend causal over all keys incl. this step's
+            const kv = &self.kv[li];
+            const total = kv.len;
+            for (0..heads) |hh| {
+                var mx: f32 = -std.math.inf(f32);
+                for (0..total) |t| {
+                    var s: f32 = 0;
+                    const kn = kv.k_nope[t * heads * nope + hh * nope ..][0..nope];
+                    for (0..nope) |i| s += q_nope[hh * nope + i] * kn[i];
+                    const kr = kv.k_rope[t * heads * rope + hh * rope ..][0..rope];
+                    for (0..rope) |i| s += q_rope[hh * rope + i] * kr[i];
+                    s *= scale;
+                    scores[t] = s;
+                    mx = @max(mx, s);
+                }
+                scores[total] = sink[hh];
+                mx = @max(mx, sink[hh]);
+                var denom: f32 = 0;
+                for (0..total + 1) |t| {
+                    scores[t] = @exp(scores[t] - mx);
+                    denom += scores[t];
+                }
+                const inv = 1.0 / denom;
+                for (0..vdim) |i| {
+                    var acc: f32 = 0;
+                    for (0..total) |t| {
+                        const vv = kv.v[t * heads * vdim + hh * vdim ..][0..vdim];
+                        acc += scores[t] * inv * vv[i];
+                    }
+                    ctx[hh * vdim + i] = acc;
+                }
+            }
+            for (0..heads * vdim) |i| ctx[i] *= ops.sigmoid(gate[i]);
+
+            const attn_out = try a.alloc(f32, h);
+            try matvecW(attn_out, self.bag, try self.nm(a, li, "self_attn.o_proj.weight"), ctx, h, heads * vdim);
+            const pn = try f32s(self.bag, try self.nm(a, li, "self_attn.post_proj_norm.weight"));
+            try ops.rmsNorm(tmp, attn_out, pn, c.eps);
+            for (0..h) |i| stream[i] += tmp[i];
+
+            try ops.rmsNorm(tmp, stream, try f32s(self.bag, try self.nm(a, li, "post_attention_layernorm.weight")), c.eps);
+            try matvecW(gu, self.bag, try self.nm(a, li, "mlp.gate_proj.weight"), tmp, inter, h);
+            try matvecW(up, self.bag, try self.nm(a, li, "mlp.up_proj.weight"), tmp, inter, h);
+            for (gu, up) |*g, *u| g.* = g.* * ops.sigmoid(g.*) * u.*;
+            try matvecW(tmp, self.bag, try self.nm(a, li, "mlp.down_proj.weight"), gu, h, inter);
+            for (0..h) |i| stream[i] += tmp[i];
+        }
+        @memcpy(out, stream);
+    }
+};

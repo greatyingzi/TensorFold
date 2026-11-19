@@ -325,14 +325,14 @@ _DFLY_SHAPES = {
     "mlp.down_proj.weight": lambda d: (d["H"], 3 * d["H"]),
     "self_attn.kv_a_layernorm.weight": lambda d: (d["KVL"],),
     "self_attn.kv_a_proj_with_mqa.weight": lambda d: (d["KVL"] + d["ROPE"], d["H"]),
-    "self_attn.kv_b_proj.weight": lambda d: (d["NH"] * (d["NOPE"] + d["VDIM"]), d["KVL"]),
-    "self_attn.learnable_sink_param": lambda d: (d["NH"],),
-    "self_attn.linear_gate.weight": lambda d: (d["NH"] * d["VDIM"], d["H"]),
-    "self_attn.o_proj.weight": lambda d: (d["H"], d["NH"] * d["VDIM"]),
+    "self_attn.kv_b_proj.weight": lambda d: (d["SWAH"] * (d["SNOPE"] + d["SVDIM"]), d["KVL"]),
+    "self_attn.learnable_sink_param": lambda d: (d["SWAH"],),
+    "self_attn.linear_gate.weight": lambda d: (d["SWAH"] * d["SVDIM"], d["H"]),
+    "self_attn.o_proj.weight": lambda d: (d["H"], d["SWAH"] * d["SVDIM"]),
     "self_attn.post_proj_norm.weight": lambda d: (d["H"],),
     "self_attn.q_a_layernorm.weight": lambda d: (d["QL"],),
     "self_attn.q_a_proj.weight": lambda d: (d["QL"], d["H"]),
-    "self_attn.q_b_proj.weight": lambda d: (d["NH"] * (d["NOPE"] + d["ROPE"]), d["QL"]),
+    "self_attn.q_b_proj.weight": lambda d: (d["SWAH"] * (d["SNOPE"] + d["SROPE"]), d["QL"]),
 }
 
 _DFLY_EXTRA = {
