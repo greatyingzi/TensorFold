@@ -44,7 +44,8 @@
 - The checkpoint contains more than the 87 per-layer dfly tensors: `final_norm`, `hidden_correction.{embed_norm,hidden_norm,gate_proj,up_proj,down_proj}`, `mtp_fusion.{enorm,hnorm,eh_proj,gate}`, `confidence_head`. The first drafter ignored all of them and wrongly used the target model's `norm.weight`, which made its hidden nearly orthogonal to the target (cos 0.06, top-10 overlap 0/10).
 - Wired the full draft route: hidden_correction (SwiGLU on concat(norm(embed), norm(target hidden))) -> 5 gated MLA draft layers -> mtp_fusion (enorm/hnorm + eh_proj + gate) -> dfly final_norm -> shared lm_head.
 - Native DGX00 probe with the corrected binary, seed 120000: `sum_chain` agreement 2/5 = 40% (was 0% with the stale binary that lacked these modules), `target_only` 0%. The official-style MTP recipe in the repo's ling oracle confirms enorm/hnorm -> concat -> eh_proj -> draft block -> final_norm. sum_chain is the融合变体 to use in the spec-decode ring.
-- The spec-decode loop is wired into `hy4-runner ... spec TOKEN STEPS` via `draft.proposeDfly` + `draft.verify`; synthetic fixture smoke 2/2 accepted.
+- The spec-decode loop is wired into `hy4-runner ... spec TOKEN STEPS` via `draft.proposeDfly`; synthetic fixture smoke 2/2 accepted. A double-step bug (target advanced once at loop head and again in verify) was fixed.
+- 20-step native probe (seed 120000, 564.8s): `sum_chain` 4/20 = 20%, `target_only` 0/20 = 0%. Baselines: embed-vs-final cosine ~0.01, layer-41 hidden-vs-final ~0.75. The draft vector is above the embed baseline but below the target hidden; acceptance is real but modest. sum_chain is the fusion to use.
 
 ### EXL3 3.0bpw quantization (2026-11-19 12:33)
 
