@@ -59,6 +59,10 @@ pub fn main(init: std.process.Init) !void {
 
     const mixed = try dev(a, &driver, rows * H * 2);
     const xbuf = try dev(a, &driver, rows * H * 2);
+    var inv_freq = try cuda.memory.DeviceBuffer.fromHost(&driver, std.mem.sliceAsBytes(&cuda.mla.ropeFreqs(6e6)));
+    defer inv_freq.free();
+    var pos_buf = try cuda.memory.DeviceBuffer.fromHost(&driver, std.mem.asBytes(&@as(i32, 0)));
+    defer pos_buf.free();
     const qn = try dev(a, &driver, rows * p.cfg.q_lora * 2);
     const qfull = try dev(a, &driver, rows * p.cfg.heads * (p.cfg.nope + p.cfg.rope) * 2);
     const kva = try dev(a, &driver, rows * (p.cfg.kv_lora + p.cfg.rope) * 4);
@@ -118,11 +122,27 @@ pub fn main(init: std.process.Init) !void {
         try norms.rms(s, qn, .bf16, p.q_a_norm[li], qn, .bf16, rows, p.cfg.q_lora, p.cfg.eps);
         if (li == 0) std.debug.print("step pre qb\n", .{});
         try dense.decode(s, L.q_b, qn, .bf16, rows, qfull, .bf16);
+        try mla.rope(s, .{
+            .x = qfull + p.cfg.nope * 2,
+            .x_row = p.cfg.heads * (p.cfg.nope + p.cfg.rope),
+            .x_head = p.cfg.nope + p.cfg.rope,
+            .out = qfull + p.cfg.nope * 2,
+            .o_row = p.cfg.heads * (p.cfg.nope + p.cfg.rope),
+            .o_head = p.cfg.nope + p.cfg.rope,
+        }, rows, p.cfg.heads, pos_buf.ptr, inv_freq.ptr, 1.0);
         if (li == 0) std.debug.print("step pre kva\n", .{});
         try drows.rows(s, xbuf, H, L.kv_a_w, kva, p.cfg.kv_lora + p.cfg.rope, rows, p.cfg.kv_lora + p.cfg.rope, H);
         try norms.rms(s, kva, .f32, p.kv_a_norm[li], kvn, .bf16, rows, p.cfg.kv_lora, p.cfg.eps);
         if (li == 0) std.debug.print("step pre kvb\n", .{});
         try dense.decode(s, L.kv_b, kvn, .bf16, rows, kvb, .bf16);
+        try mla.rope(s, .{
+            .x = kvb + p.cfg.nope * 2,
+            .x_row = p.cfg.heads * (p.cfg.nope + p.cfg.vdim),
+            .x_head = p.cfg.nope + p.cfg.vdim,
+            .out = kvb + p.cfg.nope * 2,
+            .o_row = p.cfg.heads * (p.cfg.nope + p.cfg.vdim),
+            .o_head = p.cfg.nope + p.cfg.vdim,
+        }, rows, p.cfg.heads, pos_buf.ptr, inv_freq.ptr, 1.0);
         if (li == 0) std.debug.print("step pre absorb\n", .{});
         // The real KV cache path is not wired yet: zero the attention output so the rest
         // of the step can be validated on real weights first.

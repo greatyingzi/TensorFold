@@ -1,8 +1,7 @@
-//! Hy4 Flash in the native CUDA registry: minimal wiring over the host session.
+//! Hy4 Flash in the native CUDA registry: 3bpw device decode with a host fallback.
 //!
-//! This is a registration skeleton, not a GPU engine: the checkpoint is read on
-//! the host and every forward goes through families/hy_v4_flash/session.zig.
-//! TODO(GPU decode): open the CUDA pack and swap backend.advance for its step.
+//! CUDA builds with embedded kernels load the EXL3 pack and run the GPU step;
+//! builds without kernels keep the original host Session registration.
 
 const std = @import("std");
 const cuda = @import("cuda");
@@ -13,8 +12,10 @@ const config = @import("config.zig");
 const loader = @import("loader.zig");
 const weights = @import("weights.zig");
 const backend = @import("backend.zig");
+const gpu_pack = @import("hy4pack");
+const gpu_runner = @import("hy4runner");
 
-/// The registry entry (native/cuda_families.zig) names this module as `native`.
+/// The registry entry (native/cuda_families.zig) names this module as native.
 pub const native = @This();
 
 pub const model_type = capability.model_type;
@@ -50,61 +51,110 @@ pub const Loaded = struct {
 const Owned = struct {
     gpa: std.mem.Allocator,
     cfg: config.Config,
-    bag: weights.Bag,
+    bag: ?weights.Bag = null,
+    pack: ?gpu_pack.Pack = null,
+    runner: ?gpu_runner.Runner = null,
     impl: backend.Backend,
 };
 
-/// Rows a temporary host session keeps: large enough for a smoke reply, small
-/// enough that --parallel does not multiply a full model's KV on the host.
+/// Rows a lane may consume: large enough for a smoke reply, bounded so --parallel
+/// does not multiply a full model's host KV. The GPU step has no cache yet, so this
+/// is only a row counter there.
 fn cacheCap(context: usize) usize {
     return @min(context, 64);
 }
 
-pub fn open(gpa: std.mem.Allocator, io: std.Io, ctx: *const cuda.Context, dir: []const u8, kernels: ?[]const u8, o: Options) !Loaded {
-    _ = ctx; // the fallback reads weights on the host; no device work yet
-    if (kernels != null) return error.CapturedKernels;
+/// The compressed EXL3 device budget: about 63 GiB of uploaded 3bpw weights plus
+/// headroom for uploader staging and scratch, not the pack's file bytes (which
+/// include unquantized shards the runner never loads).
+pub fn textWeightBytes(_: std.mem.Allocator, _: std.Io, _: []const u8) !?u64 {
+    return @as(u64, 70) * (1 << 30);
+}
+
+fn gpuStep(ptr: *anyopaque, token: usize) anyerror![]const f32 {
+    const r: *gpu_runner.Runner = @ptrCast(@alignCast(ptr));
+    return r.step(token);
+}
+
+fn readConfig(gpa: std.mem.Allocator, io: std.Io, dir: []const u8) !config.Config {
     const cfg_path = try std.fs.path.join(gpa, &.{ dir, "config.json" });
     defer gpa.free(cfg_path);
     const bytes = try std.Io.Dir.cwd().readFileAlloc(io, cfg_path, gpa, .limited(16 << 20));
     defer gpa.free(bytes);
-    const cfg = try config.parse(gpa, bytes);
+    return config.parse(gpa, bytes);
+}
 
-    const own = try gpa.create(Owned);
-    errdefer gpa.destroy(own);
-    own.* = .{ .gpa = gpa, .cfg = cfg, .bag = undefined, .impl = undefined };
-    const meta = (try loader.inspect(gpa, io, dir)).meta;
-    own.bag = try weights.load(gpa, io, dir, &meta);
-    errdefer own.bag.deinit();
-    const slots: usize = @max(1, o.lanes);
-    own.impl = try backend.Backend.init(gpa, .{ .config = &own.cfg, .bag = &own.bag, .cap = cacheCap(o.context), .slots = slots });
-    errdefer own.impl.deinit();
-
-    std.log.info("hy_v4_flash: CUDA registration active, forward falling back to the host session ({d} KV rows, {d} stream{s})", .{ cacheCap(o.context), slots, if (slots == 1) "" else "s" });
+fn loaded(own: *Owned, stream_bytes: usize) Loaded {
+    const slots: usize = @max(1, own.impl.slots);
     return .{
         .backend = own.impl.backend(),
         .facts = own.impl.facts(),
         .rows = prompt_rows,
-        .stream_bytes = 0,
+        .stream_bytes = stream_bytes,
         .free_streams = @intCast(slots),
         .ctx = own,
         .deinit = release,
     };
 }
 
+/// The real path: one device pack, one Runner, one opaque forward hook.
+fn openGpu(gpa: std.mem.Allocator, io: std.Io, ctx: *const cuda.Context, dir: []const u8, o: Options) !Loaded {
+    const own = try gpa.create(Owned);
+    errdefer gpa.destroy(own);
+    own.* = .{ .gpa = gpa, .cfg = try readConfig(gpa, io, dir), .impl = undefined };
+    own.pack = try gpu_pack.load(gpa, io, ctx.d, dir);
+    errdefer own.pack.?.deinit();
+    own.runner = try gpu_runner.Runner.init(gpa, ctx.d, ctx, &own.pack.?);
+    errdefer own.runner.?.deinit();
+    const slots: usize = @max(1, o.lanes);
+    own.impl = try backend.Backend.init(gpa, .{
+        .config = &own.cfg,
+        .cap = cacheCap(o.context),
+        .slots = slots,
+        .gpu = .{ .ptr = &own.runner.?, .step = gpuStep },
+    });
+    errdefer own.impl.deinit();
+    std.log.info("hy_v4_flash: 3bpw GPU decode active, {d} bytes of scratch and {d} stream{s}", .{ own.runner.?.deviceBytes(), slots, if (slots == 1) "" else "s" });
+    return loaded(own, own.runner.?.deviceBytes());
+}
+
+/// Builds without embedded kernels keep the original host-session registration.
+fn openHost(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, o: Options) !Loaded {
+    const own = try gpa.create(Owned);
+    errdefer gpa.destroy(own);
+    own.* = .{ .gpa = gpa, .cfg = try readConfig(gpa, io, dir), .impl = undefined };
+    const meta = (try loader.inspect(gpa, io, dir)).meta;
+    own.bag = try weights.load(gpa, io, dir, &meta);
+    errdefer own.bag.?.deinit();
+    const slots: usize = @max(1, o.lanes);
+    own.impl = try backend.Backend.init(gpa, .{ .config = &own.cfg, .bag = &own.bag.?, .cap = cacheCap(o.context), .slots = slots });
+    errdefer own.impl.deinit();
+    std.log.info("hy_v4_flash: no embedded kernels, forward falling back to the host session ({d} KV rows, {d} stream{s})", .{ cacheCap(o.context), slots, if (slots == 1) "" else "s" });
+    return loaded(own, 0);
+}
+
+pub fn open(gpa: std.mem.Allocator, io: std.Io, ctx: *const cuda.Context, dir: []const u8, kernels: ?[]const u8, o: Options) !Loaded {
+    if (!cuda.kernels.available) return openHost(gpa, io, dir, o);
+    if (kernels != null) return error.CapturedKernels;
+    return openGpu(gpa, io, ctx, dir, o);
+}
+
 fn release(p: *anyopaque) void {
     const own: *Owned = @ptrCast(@alignCast(p));
     own.impl.deinit();
-    own.bag.deinit();
+    if (own.runner) |*r| r.deinit();
+    if (own.pack) |*pk| pk.deinit();
+    if (own.bag) |*b| b.deinit();
     own.* = undefined;
     own.gpa.destroy(own);
 }
 
 pub fn explain(_: ?*anyopaque, err: anyerror) ?[]const u8 {
     return switch (err) {
-        error.CapturedKernels => "hy_v4_flash runs its own host session: unset TENSORFOLD_CUDA_KERNELS",
+        error.CapturedKernels => "hy_v4_flash runs its own fused GPU kernels: unset TENSORFOLD_CUDA_KERNELS",
         error.UnsupportedHy4Model => "hy_v4_flash: this checkpoint's geometry is not the released text model",
-        error.AttentionCacheFull => "hy_v4_flash: the temporary host session's KV rows are full; shorten the prompt or reply",
-        error.EmptyPrompt => "hy_v4_flash: the temporary host session needs at least one prompt token",
+        error.AttentionCacheFull => "hy_v4_flash: the lane's row budget is full; shorten the prompt or reply",
+        error.EmptyPrompt => "hy_v4_flash: the lane needs at least one prompt token",
         else => null,
     };
 }
@@ -117,4 +167,10 @@ test "hy4 native: the CUDA declarations name the admitted checkpoint" {
     try std.testing.expect(@as(?api.Family, null) == null);
     _ = cuda;
     _ = lanes;
+}
+
+test "hy4 native: admission counts the compressed device budget, not the pack's files" {
+    const bytes = (try textWeightBytes(std.testing.allocator, std.testing.io, "unused")).?;
+    try std.testing.expect(bytes >= 60 * (1 << 30));
+    try std.testing.expect(bytes <= 101 * (1 << 30));
 }

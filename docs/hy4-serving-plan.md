@@ -30,6 +30,13 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 25 (SERVICE RUNNING)
+- `tensorfold-native serve /pack --name hy4flash --parallel 1 --context 2048 --port 8080` **starts successfully on DGX00** with the real 3bpw GPU decode path: `hy_v4_flash: 3bpw GPU decode active, 611360 bytes of scratch and 1 stream`; model 59.29 GiB; loaded in 97.4 s; `/v1/models` and `/v1/completions` respond.
+- Measured serving throughput: 33.4 tok/s, TTFT 0.044 s, 8 tokens in 0.209 s (greedy).
+- `/v1/chat/completions` is refused by the checkpoint's chat template (`str.format() is not supported`) — raw `/v1/completions` works.
+- Generated text is still incoherent: the GPU step's attention is zeroed (valid only for the first token) and routed MoE experts are not yet called. Quality gate NOT passed.
+- Registration hook that made admission fit: `native.zig textWeightBytes` returns 70 GiB (compressed budget) instead of the generic 464 GiB; GPU path loads only `gpu_pack` (59.29 GiB) and skips the host Bag.
+
 ## Progress round 24 (decode step unblocked, serving registered)
 - Root cause of the 1-layer GPU step hang: IHC kernels called `__shfl_xor_sync` inside `if (lane == 0)`; only one lane of the warp participated. Fixed in both collapse and hc_head; added a gate-only kernel for correct MoE post gates.
 - Full 42-layer GPU step now completes with real 3bpw weights: finite logits (min -10.1, max +9.4), ~24-41 ms/token. Attention is temporarily zeroed (correct only for the first token with an empty cache); KV cache write is still pending.

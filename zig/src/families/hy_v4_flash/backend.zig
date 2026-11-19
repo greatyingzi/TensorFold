@@ -1,10 +1,8 @@
-//! Hy4 Flash lane backend: a temporary CPU fallback for the CUDA registration.
+//! Hy4 Flash lane backend: greedy lanes over a host Session or a GPU decode step.
 //!
-//! TODO(GPU decode): every call to advance() currently runs the host Session's
-//! step() through the whole layer stack. Replace that one call with the CUDA
-//! decode step (gpu_pack.zig + hy4_ihc glue once its KV path lands); the lane
-//! callbacks around it (handles, windows, keep, release) stay as they are.
-//! This file deliberately performs no device work.
+//! The GPU path receives an opaque Runner hook from native.zig, so this module stays
+//! device-agnostic and keeps compiling in host-only test builds. The lane callbacks
+//! around the forward seam (handles, windows, keep, release) are shared.
 
 const std = @import("std");
 const lanes = @import("lanes");
@@ -18,24 +16,34 @@ const Session = @import("session.zig").Session;
 /// Handles name a token in a small ring, as in the Dory CUDA backend.
 const ring = 1024;
 
+/// The device forward seam, handed in by native.zig to avoid importing CUDA here.
+pub const Gpu = struct {
+    ptr: *anyopaque,
+    step: *const fn (*anyopaque, usize) anyerror![]const f32,
+};
+
 pub const Options = struct {
     config: *const config.Config,
-    bag: *const weights.Bag,
-    /// KV rows a session holds; the temporary host fallback is bounded to a few dozen.
+    /// The host bag is not loaded on the GPU path.
+    bag: ?*const weights.Bag = null,
+    /// Rows a lane may consume; the host session's KV is bounded to a few dozen.
     cap: usize,
     slots: usize = 8,
+    /// When set, tokens go through the 3bpw GPU step instead of Session.step.
+    gpu: ?Gpu = null,
 };
 
 const Lane = struct {
-    session: Session,
-    len: u64 = 0, // rows the session has consumed: prompt length + committed replies
+    session: ?Session = null, // only the host fallback owns one
+    len: u64 = 0, // rows consumed: prompt length + committed replies
     first: u32 = 0, // greedy pick off the prompt's last row, drawn at prefill
 };
 
 pub const Backend = struct {
     gpa: std.mem.Allocator,
     c: *const config.Config,
-    bag: *const weights.Bag,
+    bag: ?*const weights.Bag,
+    gpu: ?Gpu,
     cap: usize,
     slots: usize,
     lanes: std.AutoHashMapUnmanaged(*const Stream, *Lane) = .empty,
@@ -44,13 +52,14 @@ pub const Backend = struct {
 
     pub fn init(gpa: std.mem.Allocator, o: Options) !Backend {
         if (o.cap == 0 or o.slots == 0) return error.BadBackendOptions;
-        return .{ .gpa = gpa, .c = o.config, .bag = o.bag, .cap = o.cap, .slots = o.slots };
+        if (o.gpu == null and o.bag == null) return error.BadBackendOptions;
+        return .{ .gpa = gpa, .c = o.config, .bag = o.bag, .gpu = o.gpu, .cap = o.cap, .slots = o.slots };
     }
 
     pub fn deinit(x: *Backend) void {
         var it = x.lanes.valueIterator();
         while (it.next()) |slot| {
-            slot.*.session.deinit();
+            if (slot.*.session) |*s| s.deinit();
             x.gpa.destroy(slot.*);
         }
         x.lanes.deinit(x.gpa);
@@ -89,11 +98,10 @@ pub const Backend = struct {
     }
 
     /// THE forward seam: the only place a token enters the model.
-    /// TODO(GPU decode): run the CUDA decode step here instead of Session.step.
     fn advance(x: *Backend, l: *Lane, token: u32) !u32 {
         if (token >= x.c.vocab) return error.BadForwardShape;
         if (l.len >= x.cap) return error.AttentionCacheFull;
-        const logits = try l.session.step(token);
+        const logits = if (x.gpu) |g| try g.step(g.ptr, token) else try l.session.?.step(token);
         l.len += 1;
         return @intCast(try ops.argmax(logits));
     }
@@ -107,16 +115,27 @@ pub const Backend = struct {
         if (ids.len > x.cap) return error.AttentionCacheFull;
         const l = try x.gpa.create(Lane);
         errdefer x.gpa.destroy(l);
-        l.* = .{ .session = try Session.init(x.gpa, x.c, x.bag, x.cap) };
-        errdefer l.session.deinit();
-        for (ids) |tok| {
-            if (tok >= x.c.vocab) return error.BadForwardShape;
-            _ = try l.session.step(tok);
+        l.* = .{};
+        if (x.gpu) |g| {
+            // One synchronous Runner serves every lane; no per-lane KV state exists yet.
+            var last: []const f32 = &.{};
+            for (ids) |tok| {
+                if (tok >= x.c.vocab) return error.BadForwardShape;
+                last = try g.step(g.ptr, tok);
+            }
+            l.first = @intCast(try ops.argmax(last));
+        } else {
+            l.session = try Session.init(x.gpa, x.c, x.bag.?, x.cap);
+            errdefer l.session.?.deinit();
+            for (ids) |tok| {
+                if (tok >= x.c.vocab) return error.BadForwardShape;
+                _ = try l.session.?.step(tok);
+            }
+            l.first = @intCast(try ops.argmax(l.session.?.logits));
         }
         l.len = ids.len;
-        l.first = @intCast(try ops.argmax(l.session.logits));
         x.lanes.put(x.gpa, s, l) catch |e| {
-            l.session.deinit();
+            if (l.session) |*ss| ss.deinit();
             return e;
         };
     }
@@ -180,7 +199,7 @@ pub const Backend = struct {
         const x = self(ptr);
         if (x.lanes.fetchRemove(s)) |entry| {
             const l = entry.value;
-            l.session.deinit();
+            if (l.session) |*ss| ss.deinit();
             x.gpa.destroy(l);
         }
     }
