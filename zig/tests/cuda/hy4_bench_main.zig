@@ -13,6 +13,10 @@ pub fn main(init: std.process.Init) !u8 {
     defer ctx.deinit();
     const gpu: check.Gpu = .{ .d = &driver, .ctx = &ctx, .gpa = init.gpa, .io = init.io };
     if (args.len > 1) {
+        if (std.mem.eql(u8, args[1], "forward")) {
+            try hy4_bench.forwardBench(gpu);
+            return 0;
+        }
         try hy4_weights_check.run(gpu, args[1]);
         return 0;
     }

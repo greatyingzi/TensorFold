@@ -14,6 +14,10 @@ const latent = 1536;
 const inter = 1536;
 const top_k = 16;
 const moe_layers = 41;
+const q_lora = 1024;
+const nope = 192;
+const vdim = 256;
+const n_experts = 512;
 /// mla.cuh chunks are 512 keys.
 const chunk = 512;
 
@@ -51,6 +55,132 @@ fn make(r: *Rig, name: []const u8, n: usize, k: usize, rows: usize) !Proj {
         .out = try r.zeros(rows * n * 4),
         .name = name,
     };
+}
+
+
+/// Full 42-layer decode step on the GPU at Hy4 geometry: the assembly receipt.
+/// Weights are random affine-4 (the kernels are memory-bound, so timing carries),
+/// attention runs the shared mla kernels over a paged latent cache.
+pub fn forwardBench(gpu: Gpu) !void {
+    var arena: std.heap.ArenaAllocator = .init(gpu.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var s = try cuda.Stream.init(gpu.d, false);
+    defer s.deinit();
+    var prng = std.Random.DefaultPrng.init(13);
+    var r: Rig = .{ .gpu = gpu, .a = a, .s = s, .rng = prng.random() };
+    defer {
+        for (r.bufs.items) |*b| b.free();
+        r.bufs.deinit(gpu.gpa);
+    }
+    const kk = cuda.kernels;
+    const images = [_][]const u8{ kk.qmm_group, kk.qmm_prefill, kk.lane_gemv, kk.affine4_pack };
+    var mods: [images.len]cuda.Module = undefined;
+    var loaded: usize = 0;
+    defer for (mods[0..loaded]) |*md| md.unload();
+    for (images, &mods) |img, *md| {
+        md.* = try cuda.Module.load(gpu.d, img);
+        loaded += 1;
+    }
+    const sms: usize = @intCast(try gpu.ctx.attribute(.multiprocessor_count));
+    var a4 = try qlinear.Affine4Kernels.resolve(gpu.d, mods[0], mods[1], mods[2], mods[3], sms, true);
+    defer a4.deinit();
+    var mla = try cuda.mla.Mla.load(gpu.d);
+    defer mla.unload();
+
+    const layers = 42;
+    const cache_rows = 4096;
+    const heads: usize = 32;
+    const lw = 512;
+    const rw = 64;
+
+    const P = struct { n: usize, k: usize };
+    const proj_specs = [_]P{
+        .{ .n = q_lora, .k = hidden },           .{ .n = heads * (nope + rw), .k = q_lora },
+        .{ .n = lw + rw, .k = hidden },          .{ .n = heads * (nope + vdim), .k = lw },
+        .{ .n = hidden, .k = heads * vdim },     .{ .n = 2 * inter, .k = hidden },
+        .{ .n = hidden, .k = inter },            .{ .n = latent, .k = hidden },
+        .{ .n = hidden, .k = latent },           .{ .n = n_experts, .k = hidden },
+        .{ .n = 2 * inter, .k = latent },        .{ .n = latent, .k = inter },
+    };
+    var lay: [proj_specs.len][layers]qlinear.Affine4 = undefined;
+    var x_in: [proj_specs.len][layers]u64 = undefined;
+    var xs_in: [proj_specs.len][layers]u64 = undefined;
+    for (proj_specs, 0..) |sp, pi| {
+        for (0..layers) |li| {
+            const lay0 = qlinear.Affine4.layout(sp.n, sp.k);
+            lay[pi][li] = .{ .w = try r.zeros(lay0.words), .s = try r.zeros(lay0.scales), .b = try r.zeros(lay0.scales), .n = sp.n, .k = sp.k, .npad = lay0.npad };
+            const xb = try r.bfs(16 * sp.k, 1.0);
+            x_in[pi][li] = try r.dev(std.mem.sliceAsBytes(xb));
+            const sums = try a.alloc(f32, 16 * sp.k / 64);
+            for (0..16 * sp.k / 64) |g| {
+                var t: f32 = 0;
+                for (0..64) |j| t += bfOfHost(xb[g * 64 + j]);
+                sums[g] = t;
+            }
+            xs_in[pi][li] = try r.dev(std.mem.sliceAsBytes(sums));
+        }
+    }
+    var outs: [proj_specs.len][layers]u64 = undefined;
+    for (proj_specs, 0..) |sp, pi| {
+        for (0..layers) |li| outs[pi][li] = try r.zeros(16 * sp.n * 2);
+    }
+
+    var caches: [layers]u64 = undefined;
+    var poss: [layers]u64 = undefined;
+    for (0..layers) |li| {
+        caches[li] = try r.zeros(cache_rows * (lw + rw) * 2);
+        poss[li] = try r.zeros(4);
+    }
+    const qa = try r.zeros(16 * heads * (lw + rw) * 2);
+    const po = try r.zeros(8 * heads * lw * 4);
+    const pm = try r.zeros(8 * heads * 4);
+    const pl = try r.zeros(8 * heads * 4);
+    const merged: cuda.mla.Partials = .{ .po = po, .pm = pm, .pl = pl };
+    const ol = try r.zeros(16 * heads * lw * 2);
+    const attn_out = try r.zeros(16 * heads * vdim * 2);
+    const wv = try r.zeros(heads * vdim * lw * 2);
+    const wk = try r.zeros(heads * nope * lw * 2);
+    const nch = (cache_rows + 511) / 512;
+
+    for ([_]usize{1}) |rows| {
+        var t0 = try cuda.Event.init(gpu.d, true);
+        defer t0.deinit();
+        var t1 = try cuda.Event.init(gpu.d, true);
+        defer t1.deinit();
+        try s.synchronize();
+        try t0.record(s);
+        for (0..10) |_| {
+            for (0..layers) |li| {
+                try a4.decode(s, x_in[0][li], xs_in[0][li], lay[0][li], outs[0][li], rows);
+                try a4.decode(s, x_in[1][li], xs_in[1][li], lay[1][li], outs[1][li], rows);
+                try a4.decode(s, x_in[2][li], xs_in[2][li], lay[2][li], outs[2][li], rows);
+                try a4.decode(s, x_in[3][li], xs_in[3][li], lay[3][li], outs[3][li], rows);
+                try a4.decode(s, x_in[4][li], xs_in[4][li], lay[4][li], outs[4][li], rows);
+                try a4.decode(s, x_in[5][li], xs_in[5][li], lay[5][li], outs[5][li], rows);
+                try a4.decode(s, x_in[6][li], xs_in[6][li], lay[6][li], outs[6][li], rows);
+                try a4.decode(s, x_in[7][li], xs_in[7][li], lay[7][li], outs[7][li], rows);
+                try a4.decode(s, x_in[8][li], xs_in[8][li], lay[8][li], outs[8][li], rows);
+                try a4.decode(s, x_in[9][li], xs_in[9][li], lay[9][li], outs[9][li], rows);
+                for (0..top_k) |_| {
+                    try a4.decode(s, x_in[10][li], xs_in[10][li], lay[10][li], outs[10][li], rows);
+                    try a4.decode(s, x_in[11][li], xs_in[11][li], lay[11][li], outs[11][li], rows);
+                }
+                try mla.absorbQ(s, qa, nope, wk, qa, lw + rw, rows, heads, nope, lw);
+                try mla.chunks(s, qa, caches[li], poss[li], .{ .po = po, .pm = pm, .pl = pl }, rows, heads, nch, 0.0625);
+                try mla.mergePart(s, .{ .po = po, .pm = pm, .pl = pl }, merged, rows, heads, nch);
+                try mla.expandV(s, ol, wv, attn_out, rows, heads, vdim, lw);
+            }
+        }
+        try t1.record(s);
+        try t1.synchronize();
+        const ms = try cuda.Event.elapsedMs(t0, t1);
+        std.debug.print("hy4 full-step rows={d}: {d:.2} ms/token  {d:.1} tok/s  (42L, all projections + mla, random affine4)\n", .{ rows, ms / 10.0, 10000.0 / ms });
+    }
+}
+
+fn bfOfHost(bits: u16) f32 {
+    return @bitCast(@as(u32, bits) << 16);
 }
 
 fn timeIt(gpu: Gpu, a4: *const qlinear.Affine4Kernels, s: cuda.Stream, ps: []const Proj, rows: usize, reps: usize) !f32 {
