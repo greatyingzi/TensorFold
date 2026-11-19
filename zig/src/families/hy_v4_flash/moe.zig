@@ -24,7 +24,15 @@ fn expertMatrix(dst: []f32, t: *const weights.Tensor, e: usize) !void {
                 per,
             );
         },
-        .i32s, .bf16raw => return error.ExpectedF32Tensor,
+        .bf16raw => |v| {
+            const base = e * dst.len * 2;
+            if (v.len < base + dst.len * 2) return error.BadMoeShape;
+            for (0..dst.len) |i| {
+                const bits = std.mem.readInt(u16, v[base + i * 2 ..][0..2], .little);
+                dst[i] = @bitCast(@as(u32, bits) << 16);
+            }
+        },
+        .i32s => return error.ExpectedF32Tensor,
     }
 }
 
@@ -33,7 +41,10 @@ fn f32s(bag: *const weights.Bag, name: []const u8) ![]const f32 {
     return switch (t.value) {
         .f32s => |v| v,
         .i32s, .affine4 => error.ExpectedF32Tensor,
-        .bf16raw => return error.ExpectedF32Tensor,
+        .bf16raw => {
+            std.debug.print("F32S_BF16RAW_moe {s}\n", .{name});
+            return error.ExpectedF32Tensor;
+        },
     };
 }
 

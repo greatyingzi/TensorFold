@@ -11,7 +11,10 @@ fn f32s(bag: *const weights.Bag, name: []const u8) ![]const f32 {
     return switch (t.value) {
         .f32s => |v| v,
         .i32s, .affine4 => error.ExpectedF32Tensor,
-        .bf16raw => return error.ExpectedF32Tensor,
+        .bf16raw => {
+            std.debug.print("F32S_BF16RAW_recall {s}\\n", .{name});
+            return error.ExpectedF32Tensor;
+        },
     };
 }
 

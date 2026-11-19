@@ -125,6 +125,7 @@ pub fn inspect(gpa: std.mem.Allocator, io: std.Io, dir: []const u8) !Admission {
                 if (tensor.dtype != want_shape.dtype) return error.UnsupportedHy4TensorDtype;
                 if (!want_shape.is(tensor.rank, tensor.shape[0..tensor.rank]) and
                     !(std.mem.endsWith(u8, item.key_ptr.*, "engram_layer.lookup_table") and tensor.dtype == .i32 and tensor.rank == 1)) {
+                    std.debug.print("LOADER_MISMATCH {s} got rank={d} shape={any}\n", .{ item.key_ptr.*, tensor.rank, tensor.shape[0..tensor.rank] });
                     return error.Hy4TensorShapeMismatch;
                 }
                 out.shaped += 1;

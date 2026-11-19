@@ -18,7 +18,10 @@ fn f32s(bag: *const weights.Bag, name: []const u8) ![]const f32 {
     return switch (t.value) {
         .f32s => |v| v,
         .i32s, .affine4 => error.ExpectedF32Tensor,
-        .bf16raw => return error.ExpectedF32Tensor,
+        .bf16raw => {
+            std.debug.print("F32S_BF16RAW {s}\n", .{name});
+            return error.ExpectedF32Tensor;
+        },
     };
 }
 
@@ -80,8 +83,9 @@ pub const Session = struct {
             }
             ok_layers += 1;
         }
-        const embed = try f32s(bag, "embed_tokens.weight");
-        if (embed.len != c.vocab * c.hidden) return error.BadForwardShape;
+        const emb_t = bag.get("embed_tokens.weight") orelse return error.MissingHy4Tensor;
+        const emb_elems: usize = emb_t.shape[0] * emb_t.shape[1];
+        if (emb_t.rank != 2 or emb_elems != c.vocab * c.hidden) return error.BadForwardShape;
         for (0..c.hc_mult) |s| {
             self.streams[s] = try gpa.alloc(f32, c.hidden);
             self.next[s] = try gpa.alloc(f32, c.hidden);
@@ -126,12 +130,26 @@ pub const Session = struct {
         const c = self.c;
         const h = c.hidden;
         const hc = c.hc_mult;
-        const embed = try f32s(self.bag, "embed_tokens.weight");
-        for (0..hc) |s| @memcpy(self.streams[s], embed[token * h ..][0..h]);
+        const emb_t = self.bag.get("embed_tokens.weight") orelse return error.MissingHy4Tensor;
+        switch (emb_t.value) {
+            .f32s => |v| {
+                for (0..hc) |s| @memcpy(self.streams[s], v[token * h ..][0..h]);
+            },
+            .bf16raw => |v| {
+                const base = token * h * 2;
+                for (0..h) |i| {
+                    const bits = std.mem.readInt(u16, v[base + i * 2 ..][0..2], .little);
+                    const decoded: f32 = @bitCast(@as(u32, bits) << 16);
+                    for (0..hc) |s| self.streams[s][i] = decoded;
+                }
+            },
+            .i32s, .affine4 => return error.ExpectedF32Tensor,
+        }
 
         const mixed = try a.alloc(f32, h);
         const ffn = try a.alloc(f32, h);
         for (0..c.layers) |li| {
+            std.debug.print("LAYER {d}\n", .{li});
             const plan = try graph.layerPlan(c, li);
             const nope = if (plan.kind == .sliding) c.swa_qk_nope else c.qk_nope;
             const rope = if (plan.kind == .sliding) c.swa_qk_rope else c.qk_rope;

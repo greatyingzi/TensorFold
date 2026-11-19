@@ -65,7 +65,7 @@ pub const Drafter = struct {
     pub fn init(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weights.Bag, cap: usize) !Drafter {
         var d: Drafter = .{ .gpa = gpa, .c = c, .bag = bag };
         for (0..c.dfly.layers) |li| {
-            d.kv[li] = try Kv.init(gpa, cap, c.swa_heads, c.swa_qk_nope, c.swa_qk_rope, c.swa_v_dim);
+            d.kv[li] = try Kv.init(gpa, cap, c.heads, c.qk_nope, c.qk_rope, c.v_dim);
         }
         return d;
     }
@@ -87,10 +87,10 @@ pub const Drafter = struct {
         defer arena.deinit();
         const a = arena.allocator();
         const h = c.hidden;
-        const heads = c.swa_heads;
-        const nope = c.swa_qk_nope;
-        const rope = c.swa_qk_rope;
-        const vdim = c.swa_v_dim;
+        const heads = c.heads;
+        const nope = c.qk_nope;
+        const rope = c.qk_rope;
+        const vdim = c.v_dim;
         const q_lora = c.q_lora;
         const inter = 3 * c.hidden;
         if (out.len != h or embed_tok.len != h or h_targets.len != 0 and h_targets[0].len != h) return error.BadDraftShape;
@@ -205,5 +205,6 @@ pub const Drafter = struct {
             for (0..h) |i| stream[i] += tmp[i];
         }
         @memcpy(out, stream);
+        self.len += 1;
     }
 };

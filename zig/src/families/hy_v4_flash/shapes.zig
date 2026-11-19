@@ -96,14 +96,14 @@ pub fn expected(c: *const cfg.Config, name: []const u8, lookup_len: usize) ?Shap
             if (std.mem.eql(u8, ds, "mlp.down_proj.weight")) return v2(c.hidden, 3 * c.hidden);
             if (std.mem.eql(u8, ds, "self_attn.q_a_proj.weight")) return v2(c.q_lora, c.hidden);
             if (std.mem.eql(u8, ds, "self_attn.q_a_layernorm.weight")) return v1(c.q_lora);
-            if (std.mem.eql(u8, ds, "self_attn.q_b_proj.weight")) return v2(c.swa_heads * (c.swa_qk_nope + c.swa_qk_rope), c.q_lora);
+            if (std.mem.eql(u8, ds, "self_attn.q_b_proj.weight")) return v2(c.heads * (c.qk_nope + c.qk_rope), c.q_lora);
             if (std.mem.eql(u8, ds, "self_attn.kv_a_proj_with_mqa.weight")) return v2(c.kv_lora + c.qk_rope, c.hidden);
             if (std.mem.eql(u8, ds, "self_attn.kv_a_layernorm.weight")) return v1(c.kv_lora);
-            if (std.mem.eql(u8, ds, "self_attn.kv_b_proj.weight")) return v2(c.swa_heads * (c.swa_qk_nope + c.swa_v_dim), c.kv_lora);
-            if (std.mem.eql(u8, ds, "self_attn.o_proj.weight")) return v2(c.hidden, c.swa_heads * c.swa_v_dim);
+            if (std.mem.eql(u8, ds, "self_attn.kv_b_proj.weight")) return v2(c.heads * (c.qk_nope + c.v_dim), c.kv_lora);
+            if (std.mem.eql(u8, ds, "self_attn.o_proj.weight")) return v2(c.hidden, c.heads * c.v_dim);
             if (std.mem.eql(u8, ds, "self_attn.post_proj_norm.weight")) return v1(c.hidden);
-            if (std.mem.eql(u8, ds, "self_attn.learnable_sink_param")) return v1(c.swa_heads);
-            if (std.mem.eql(u8, ds, "self_attn.linear_gate.weight")) return v2(c.swa_heads * c.swa_v_dim, c.hidden);
+            if (std.mem.eql(u8, ds, "self_attn.learnable_sink_param")) return v1(c.heads);
+            if (std.mem.eql(u8, ds, "self_attn.linear_gate.weight")) return v2(c.heads * c.v_dim, c.hidden);
             return null;
         }
         return null;
