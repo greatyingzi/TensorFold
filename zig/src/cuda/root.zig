@@ -74,6 +74,7 @@ pub const moe_glue = @import("moe_glue.zig");
 pub const mla = @import("mla.zig");
 pub const dense_rows = @import("dense_rows.zig");
 pub const exl3 = @import("exl3.zig");
+pub const hy4_ihc = @import("hy4_ihc.zig");
 pub const exl3_experts = @import("exl3_experts.zig");
 pub const exl3_upload = @import("exl3_upload.zig");
 pub const exl3_candidate = @import("exl3_candidate.zig");
