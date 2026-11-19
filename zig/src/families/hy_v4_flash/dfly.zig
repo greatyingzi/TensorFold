@@ -80,7 +80,6 @@ pub const Drafter = struct {
     }
 
     /// One position: h_targets are the collapsed hiddens entering the target layers here.
-    /// out receives the final draft hidden [hidden].
     pub fn step(self: *Drafter, h_targets: []const []const f32, embed_tok: []const f32, pos: usize, fusion: Fusion, out: []f32) !void {
         const c = self.c;
         const gpa = self.gpa;
