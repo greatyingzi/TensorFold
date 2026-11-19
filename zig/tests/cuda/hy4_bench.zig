@@ -714,6 +714,99 @@ pub fn expertCheck(gpu: Gpu, dir: []const u8, layer: usize, expert: usize, srcdi
     var rmax: f32 = 0;
     for (refm) |v| rmax = @max(rmax, @abs(v));
     std.debug.print("expertcheck MULTI: GPU max {d:.5} ref max {d:.5} first g {d:.5} r {d:.5}\n", .{ gmax, rmax, out_m[0], refm[0] });
+
+    // 4-expert harness: reproduce the runner's multi-expert configuration.
+    {
+        var gt4 = try a.alloc(u64, 4);
+        var dt4 = try a.alloc(u64, 4);
+        const gs4 = try a.alloc(u8, 4 * dims * 2);
+        const gv4 = try a.alloc(u8, 4 * 2 * width * 2);
+        const ds4 = try a.alloc(u8, 4 * width * 2);
+        const dv4 = try a.alloc(u8, 4 * dims * 2);
+        const k24 = try a.alloc(i32, 4);
+        for (0..4) |e| {
+            const gu4 = try tget(a, io, &files, wm, dir, try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.gate_up.{d}.trellis", .{ layer, e }));
+            const dn4 = try tget(a, io, &files, wm, dir, try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.down.{d}.trellis", .{ layer, e }));
+            const su4 = try tget(a, io, &files, wm, dir, try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.gate_up.{d}.suh", .{ layer, e }));
+            const sv4 = try tget(a, io, &files, wm, dir, try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.gate_up.{d}.svh", .{ layer, e }));
+            const dsn4 = try tget(a, io, &files, wm, dir, try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.down.{d}.suh", .{ layer, e }));
+            const dvn4 = try tget(a, io, &files, wm, dir, try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.down.{d}.svh", .{ layer, e }));
+            gt4[e] = try up.dev(gu4.bytes);
+            dt4[e] = try up.dev(dn4.bytes);
+            @memcpy(gs4[e * dims * 2 ..][0 .. dims * 2], su4.bytes);
+            @memcpy(gv4[e * 2 * width * 2 ..][0 .. 2 * width * 2], sv4.bytes);
+            @memcpy(ds4[e * width * 2 ..][0 .. width * 2], dsn4.bytes);
+            @memcpy(dv4[e * dims * 2 ..][0 .. dims * 2], dvn4.bytes);
+            k24[e] = @intCast(gu4.shape[2] / 8);
+        }
+        const L4: cuda.exl3_experts.Layer = .{
+            .gate = try up.dev(std.mem.sliceAsBytes(gt4)),
+            .up = try up.dev(std.mem.sliceAsBytes(gt4)),
+            .down = try up.dev(std.mem.sliceAsBytes(dt4)),
+            .gate_k2 = try up.dev(std.mem.sliceAsBytes(k24)),
+            .up_k2 = try up.dev(std.mem.sliceAsBytes(k24)),
+            .down_k2 = try up.dev(std.mem.sliceAsBytes(k24)),
+            .suh_g = try up.dev(gs4),
+            .suh_u = try up.dev(gs4),
+            .svh_g = try up.dev(gv4),
+            .svh_u = try up.dev(gv4),
+            .suh_d = try up.dev(ds4),
+            .svh_d = try up.dev(dv4),
+            .experts = 4,
+            .dims = dims,
+            .width = width,
+            .codebook = .mul1,
+            .uniform_k2 = @intCast(gu_tr.shape[2] / 8),
+            .gu_stride = width / 16,
+            .limit = 10.0,
+            .act_mode = 0,
+        };
+        const scb4_bytes = try cuda.exl3_experts.scratchBytes(L4, rows, slots);
+        var scb4 = try cuda.memory.DeviceBuffer.alloc(gpu.d, scb4_bytes);
+        defer scb4.free();
+        try scb4.fill8(0, s.handle);
+        const sc4 = try cuda.exl3_experts.scratch(scb4.ptr, L4, rows, slots);
+        const p4 = try a.alloc(i32, slots);
+        @memset(p4, 0);
+        for (0..4) |e| p4[e] = @intCast(e);
+        try pickm_buf.upload(0, std.mem.sliceAsBytes(p4));
+        const w4 = try a.alloc(f32, slots);
+        @memset(w4, 0);
+        for (0..4) |e| w4[e] = 0.25;
+        try wtsm_buf.upload(0, std.mem.sliceAsBytes(w4));
+        try ex.run(s, L4, x, dims, .bf16, pick, wts, rows, out, sc4);
+        try s.synchronize();
+        try obm.download(0, std.mem.sliceAsBytes(out_m));
+        var g4: f32 = 0;
+        for (out_m) |v| g4 = @max(g4, @abs(v));
+        const r4 = try a.alloc(f32, dims);
+        @memset(r4, 0);
+        for (0..4) |pe| {
+            const ge = gu_all[pe * 2 * width * dims ..][0 .. 2 * width * dims];
+            const de = dn_all[pe * dims * width ..][0 .. dims * width];
+            const go = try a.alloc(f32, 2 * width);
+            for (0..2 * width) |n| {
+                var acc: f64 = 0;
+                for (0..dims) |c| acc += @as(f64, bf(ge[n * dims + c])) * xf[c];
+                go[n] = @floatCast(acc);
+            }
+            const ac = try a.alloc(f32, width);
+            for (0..width) |i| {
+                const g2 = @min(go[i], 10.0);
+                const uu2 = @max(-10.0, @min(go[width + i], 10.0));
+                ac[i] = g2 / (1.0 + @exp(-g2)) * uu2;
+            }
+            for (0..dims) |n| {
+                var acc: f64 = 0;
+                for (0..width) |c| acc += @as(f64, bf(de[n * width + c])) * ac[c];
+                r4[n] += 0.25 * @as(f32, @floatCast(acc));
+            }
+        }
+        var rr4: f32 = 0;
+        for (r4) |v| rr4 = @max(rr4, @abs(v));
+        std.debug.print("expertcheck E4: GPU max {d:.5} ref max {d:.5} first g {d:.5} r {d:.5}\n", .{ g4, rr4, out_m[0], r4[0] });
+    }
+
     const gu_out = try a.alloc(f32, 2 * width);
     @memset(gu_out, 0);
     for (0..2 * width) |n| {

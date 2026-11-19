@@ -30,6 +30,11 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 36 (multi-expert path VERIFIED at 4-expert scale)
+- E4 harness (experts=4, pointer tables, stacked scales [4,1536], picks [0..3], wts 0.25): **GPU max 0.241 vs BF16 weighted ref 0.263 — 8% = accumulated quantization noise. The kernel AND the multi-expert grouping path are correct.**
+- Combined with the single-expert verification (2-4%), the expert machinery is sound at small scale. The runner's expert_out=0.0006 must come from what DIFFERS from the working harness: (1) 512-expert scale (pointer table 4KB, stacked scales 1.5MB, group() over 512), (2) act_mode=1 vs the harness's 0, (3) the runner's real latent_in/picks/wts.
+- Next: E512 harness reusing gpu_pack's loadExperts output (or flip the runner's act_mode to 0 first — one-line A/B), expecting to isolate the 512-scale vs glue difference in one run.
+
 ## Progress round 35 (single-expert kernel VERIFIED vs authoritative BF16)
 - expertcheck now carries an authoritative reference from the ORIGINAL BF16 source pack (`mlp.experts.gate_up_proj` [512,3072,1536]): **single-expert kernel output matches within 2–4%** (GPU max 0.465 vs ref 0.455; first element -0.097 vs -0.101) — 3bpw quantization noise. The earlier "dequantize" CPU reference was wrong (orientation bugs) and is discarded.
 - The MULTI zero in expertcheck was a harness bug: the Layer was built with experts=1 while picks referenced 223/395 — the kernel's e < experts guard dropped them. NOT the runner's failure mode.
