@@ -30,6 +30,11 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 33 (bug localized inside the expert kernel call)
+- latent_in at L1 is normal magnitude (-0.074, 0.080) — routed_down decode is correct. The expert output is ~1000x too small (0.0006 in, expected O(0.1)): the bug is inside the ex.run invocation, not the surrounding glue.
+- Prime suspects: (a) gate and up trellis pointers ALIASED to the same fused gate_up trellis with gu_stride=96 — the kernel may expect two separate contiguous projections; (b) act_mode=1 semantics (try 0); (c) the suh/svh stacking layout [E, k] vs the kernel's expectation; (d) HAD_SCALE compensation chain in rot_in/grouped/down epilogues.
+- Next: standalone numeric check of the expert kernel (the bench never verified outputs), starting with separate gate/up pointer uploads and act_mode=0.
+
 ## Progress round 32 (CLI unified onto Runner; expert-weight dtype fixed)
 - The GPU CLI now runs the serve's exact math (Runner module), making it the fast A/B testbed: builds in ~1 min instead of the native server's 6–8.
 - Real bug found and fixed: the expert kernel reads routing weights as **fp32** (`const float* wts` in exl3_experts.cu:196); we uploaded fp16, so the weighted sum read garbage/zeros — expert_out was exactly -0.0000. After the fix expert_out is nonzero and the token changed 4459 → 12653.

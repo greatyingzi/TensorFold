@@ -525,6 +525,13 @@ pub const Runner = struct {
                 try wts_buf.upload(0, std.mem.sliceAsBytes(self.host_wts));
                 // Routed: latent_down -> experts -> latent_up.
                 try dense.decode(self.s, L.routed_down, P.xbuf, .bf16, rows, self.latent_in, .bf16);
+                if (self.pos == 0 and li == 1) {
+                    const li4 = try self.a.alloc(u16, 4);
+                    defer self.a.free(li4);
+                    var lb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.latent_in, .len = 8 };
+                    try lb.download(0, std.mem.sliceAsBytes(li4));
+                    std.debug.print("GPUDUMP L1 latent_in {d:.4} {d:.4}\n", .{ @as(f32, @bitCast(@as(u32, li4[0]) << 16)), @as(f32, @bitCast(@as(u32, li4[1]) << 16)) });
+                }
                 const ex = self.ex orelse return error.RunnerNotReady;
                 const el = L.experts orelse return error.RunnerNotReady;
                 var scb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.expert_scratch, .len = self.expert_scratch_len };
