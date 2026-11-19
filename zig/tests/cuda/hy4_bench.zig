@@ -388,6 +388,106 @@ pub fn exl3Layer(gpu: Gpu, dir: []const u8, layer: usize, count: usize) !void {
     std.debug.print("exl3layer {d}..{d}: {d:.3} ms/token dense only  {d:.1} tok/s  ({d} real 3bpw projections)\n", .{ layer, layer + count - 1, total_ms, 1000.0 / total_ms, list.len * count });
 }
 
+
+/// Upload one real layer's 512 fused gate/up + down experts and time the shared kernel.
+pub fn exl3Experts(gpu: Gpu, dir: []const u8, layer: usize) !void {
+    var arena: std.heap.ArenaAllocator = .init(gpu.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = gpu.io;
+    const sf = @import("core").safetensors;
+    const E: usize = 512;
+    const dims: usize = 1536; // expert input = latent
+    const width: usize = 1536;
+    const slots: usize = 16;
+    const idx_path = try std.fs.path.join(a, &.{ dir, "model.safetensors.index.json" });
+    const idx_text = try std.Io.Dir.cwd().readFileAlloc(io, idx_path, a, .limited(64 << 20));
+    var doc = try std.json.parseFromSlice(std.json.Value, a, idx_text, .{});
+    const wm = doc.value.object.get("weight_map").?.object;
+
+    var up = cuda.exl3_upload.Uploader{ .d = gpu.d, .gpa = a, .max_buffers = 4 * E + 16 };
+    var gt = try a.alloc(u64, E);
+    var dt = try a.alloc(u64, E);
+    const gu_suh = try a.alloc(u8, E * dims * 2);
+    const gu_svh = try a.alloc(u8, E * 2 * width * 2);
+    const d_suh = try a.alloc(u8, E * width * 2);
+    const d_svh = try a.alloc(u8, E * dims * 2);
+    var opened = std.StringHashMap(*sf.File).init(a);
+    for (0..E) |e| {
+        const names = [_][]const u8{
+            try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.gate_up.{d}.trellis", .{ layer, e }),
+            try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.gate_up.{d}.suh", .{ layer, e }),
+            try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.gate_up.{d}.svh", .{ layer, e }),
+            try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.down.{d}.trellis", .{ layer, e }),
+            try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.down.{d}.suh", .{ layer, e }),
+            try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.down.{d}.svh", .{ layer, e }),
+        };
+        var tensors: [6]?sf.Tensor = undefined;
+        for (names, 0..) |nm, ni| {
+            const sh = wm.get(nm) orelse return error.MissingExl3Tensor;
+            var file = opened.get(sh.string) orelse blk: {
+                const path = try std.fs.path.join(a, &.{ dir, sh.string });
+                const ptr = try a.create(sf.File);
+                ptr.* = try sf.File.open(a, io, path);
+                try opened.put(sh.string, ptr);
+                break :blk ptr;
+            };
+            tensors[ni] = file.get(nm) orelse return error.MissingExl3Tensor;
+        }
+        gt[e] = try up.dev(tensors[0].?.bytes);
+        dt[e] = try up.dev(tensors[3].?.bytes);
+        @memcpy(gu_suh[e * dims * 2 ..][0 .. dims * 2], tensors[1].?.bytes);
+        @memcpy(gu_svh[e * 2 * width * 2 ..][0 .. 2 * width * 2], tensors[2].?.bytes);
+        @memcpy(d_suh[e * width * 2 ..][0 .. width * 2], tensors[4].?.bytes);
+        @memcpy(d_svh[e * dims * 2 ..][0 .. dims * 2], tensors[5].?.bytes);
+    }
+    const k2 = try a.alloc(i32, E);
+    @memset(k2, 6);
+    var s = try cuda.Stream.init(gpu.d, false);
+    defer s.deinit();
+    const L: cuda.exl3_experts.Layer = .{
+        .gate = try up.dev(std.mem.sliceAsBytes(gt)),
+        .up = try up.dev(std.mem.sliceAsBytes(gt)),
+        .down = try up.dev(std.mem.sliceAsBytes(dt)),
+        .gate_k2 = try up.dev(std.mem.sliceAsBytes(k2)),
+        .up_k2 = try up.dev(std.mem.sliceAsBytes(k2)),
+        .down_k2 = try up.dev(std.mem.sliceAsBytes(k2)),
+        .suh_g = try up.dev(gu_suh),
+        .suh_u = try up.dev(gu_suh),
+        .svh_g = try up.dev(gu_svh),
+        .svh_u = try up.dev(gu_svh),
+        .suh_d = try up.dev(d_suh),
+        .svh_d = try up.dev(d_svh),
+        .experts = E,
+        .dims = dims,
+        .width = width,
+        .codebook = .mul1,
+        .uniform_k2 = 6,
+        .gu_stride = width / 16,
+    };
+    const rows: usize = 1;
+    const x = try up.dev(try a.alloc(u8, rows * dims * 2));
+    const pick = try up.dev(try a.alloc(u8, rows * slots * 4));
+    const wts = try up.dev(try a.alloc(u8, rows * slots * 2));
+    const out = try up.dev(try a.alloc(u8, rows * dims * 4));
+    const sc_bytes = try cuda.exl3_experts.scratchBytes(L, rows, slots);
+    const sc = try cuda.exl3_experts.scratch(try up.dev(try a.alloc(u8, sc_bytes)), L, rows, slots);
+    var ex = try cuda.exl3_experts.Experts.load(gpu.d);
+    defer ex.unload();
+    for (0..3) |_| try ex.run(s, L, x, dims, .f16, pick, wts, rows, out, sc);
+    try s.synchronize();
+    var t0 = try cuda.Event.init(gpu.d, true);
+    defer t0.deinit();
+    var t1 = try cuda.Event.init(gpu.d, true);
+    defer t1.deinit();
+    try t0.record(s);
+    for (0..50) |_| try ex.run(s, L, x, dims, .f16, pick, wts, rows, out, sc);
+    try t1.record(s);
+    try t1.synchronize();
+    const ms = try cuda.Event.elapsedMs(t0, t1) / 50.0;
+    std.debug.print("exl3experts L{d}: {d} real 3bpw experts, {d:.3} ms/token = {d:.1} tok/s\n", .{ layer, E, ms, 1000.0 / ms });
+}
+
 fn bfOfHost(bits: u16) f32 {
     return @bitCast(@as(u32, bits) << 16);
 }
