@@ -1,6 +1,6 @@
 //! Reader for Hy4 PTQ weights stored as MLX affine 4-bit, group 64.
 const std = @import("std");
-const core = @import("../../core/affine4_host.zig");
+const core = @import("core").affine4_host;
 const weights = @import("weights.zig");
 
 pub const group = 64;

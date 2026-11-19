@@ -162,6 +162,19 @@ fn scalar(a: std.mem.Allocator, io: std.Io, p: *Pack, files: *std.StringHashMap(
     return p.up.dev(t.bytes);
 }
 
+
+/// Upload a BF16 tensor expanded to fp32 (the shared norms kernels take fp32 weights).
+fn scalarF32(a: std.mem.Allocator, io: std.Io, p: *Pack, files: *std.StringHashMap(*sf.File), wm: std.json.ObjectMap, dir: []const u8, name: []const u8) !u64 {
+    const t = try getTensor(a, io, files, wm, dir, name);
+    const bf = t.bytes.len / 2;
+    const out = try a.alloc(f32, bf);
+    for (out, 0..) |*v, i| {
+        const bits = std.mem.readInt(u16, t.bytes[i * 2 ..][0..2], .little);
+        v.* = @bitCast(@as(u32, bits) << 16);
+    }
+    return p.up.dev(std.mem.sliceAsBytes(out));
+}
+
 pub fn load(a: std.mem.Allocator, io: std.Io, d: *const cuda.Driver, dir: []const u8) !Pack {
     const idx_path = try join(a, dir, "model.safetensors.index.json");
     const idx_text = try std.Io.Dir.cwd().readFileAlloc(io, idx_path, a, .limited(64 << 20));
@@ -173,8 +186,17 @@ pub fn load(a: std.mem.Allocator, io: std.Io, d: *const cuda.Driver, dir: []cons
     p.embed_host = (try getTensor(a, io, &files, wm, dir, "model.embed_tokens.weight")).bytes;
     p.embed = try p.up.dev(p.embed_host);
     p.lm_head = try scalar(a, io, &p, &files, wm, dir, "lm_head.weight");
-    p.lm_head_w = p.lm_head;
-    p.final_norm = try scalar(a, io, &p, &files, wm, dir, "model.norm.weight");
+    // The converter stores lm_head as fp16; dense_rows wants bf16. Convert once on load.
+    const lmt = try getTensor(a, io, &files, wm, dir, "lm_head.weight");
+    const lm16 = std.mem.bytesAsSlice(f16, lmt.bytes);
+    const lmbf = try a.alloc(u16, lm16.len);
+    for (lm16, 0..) |v, i| {
+        const f: f32 = @floatCast(v);
+        const bits: u32 = @bitCast(f);
+        lmbf[i] = @truncate(bits >> 16);
+    }
+    p.lm_head_w = try p.up.dev(std.mem.sliceAsBytes(lmbf));
+    p.final_norm = try scalarF32(a, io, &p, &files, wm, dir, "model.norm.weight");
     p.head_fn = try scalar(a, io, &p, &files, wm, dir, "model.hc_head.hc_head_fn");
     p.head_base = try scalar(a, io, &p, &files, wm, dir, "model.hc_head.hc_head_base");
     p.head_scale = try scalar(a, io, &p, &files, wm, dir, "model.hc_head.hc_head_scale");
@@ -198,11 +220,11 @@ pub fn load(a: std.mem.Allocator, io: std.Io, d: *const cuda.Driver, dir: []cons
         p.ffn_fn[li] = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}hc_mlp_layer.hc_pre.hc_fn", .{pre}));
         p.ffn_base[li] = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}hc_mlp_layer.hc_pre.hc_base", .{pre}));
         p.ffn_scale[li] = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}hc_mlp_layer.hc_pre.hc_scale", .{pre}));
-        p.input_norm[li] = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}input_layernorm.weight", .{pre}));
-        p.post_attn_norm[li] = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}post_attention_layernorm.weight", .{pre}));
-        p.q_a_norm[li] = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.q_a_layernorm.weight", .{pre}));
-        p.kv_a_norm[li] = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.kv_a_layernorm.weight", .{pre}));
-        p.post_proj_norm[li] = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.post_proj_norm.weight", .{pre}));
+        p.input_norm[li] = try scalarF32(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}input_layernorm.weight", .{pre}));
+        p.post_attn_norm[li] = try scalarF32(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}post_attention_layernorm.weight", .{pre}));
+        p.q_a_norm[li] = try scalarF32(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.q_a_layernorm.weight", .{pre}));
+        p.kv_a_norm[li] = try scalarF32(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.kv_a_layernorm.weight", .{pre}));
+        p.post_proj_norm[li] = try scalarF32(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.post_proj_norm.weight", .{pre}));
         p.sinks[li] = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.learnable_sink_param", .{pre}));
         p.gate_proj[li] = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.linear_gate.weight", .{pre}));
     }

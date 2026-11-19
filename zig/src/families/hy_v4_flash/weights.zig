@@ -1,6 +1,6 @@
 //! Host-owned tensor bag: load a Hy4 checkpoint's BF16 and I32 tensors into flat f32/i32 buffers.
 const std = @import("std");
-const safetensors = @import("../../core/safetensors.zig");
+const safetensors = @import("core").safetensors;
 const config = @import("config.zig");
 const graph = @import("graph.zig");
 const names = @import("tensor_names.zig");

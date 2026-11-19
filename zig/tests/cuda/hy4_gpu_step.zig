@@ -158,8 +158,12 @@ pub fn main(init: std.process.Init) !void {
     try logits_buf.downloadAsync(0, std.mem.sliceAsBytes(host), s.handle);
     try s.synchronize();
     var best: usize = 0;
+    var lo: f32 = std.math.inf(f32);
+    var hi: f32 = -std.math.inf(f32);
     for (host, 0..) |v, i| {
         if (v > host[best]) best = i;
+        lo = @min(lo, v);
+        hi = @max(hi, v);
     }
-    std.debug.print("hy4 gpu step token={d} -> {d}  {d:.2} ms  {d:.1} tok/s\n", .{ token, best, ms, 1000.0 / ms });
+    std.debug.print("hy4 gpu step token={d} -> {d} logits[{d}]={d:.4} min={d:.4} max={d:.4}  {d:.2} ms  {d:.1} tok/s\n", .{ token, best, best, host[best], lo, hi, ms, 1000.0 / ms });
 }

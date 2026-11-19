@@ -1,6 +1,6 @@
 //! Open a Hy4 Flash checkpoint's index and shards before any weight is consumed by a forward.
 const std = @import("std");
-const safetensors = @import("../../core/safetensors.zig");
+const safetensors = @import("core").safetensors;
 const config = @import("config.zig");
 const graph = @import("graph.zig");
 const names = @import("tensor_names.zig");

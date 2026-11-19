@@ -2,7 +2,7 @@
 const std = @import("std");
 const cfg = @import("config.zig");
 const graph = @import("graph.zig");
-const st = @import("../../core/safetensors.zig");
+const st = @import("core").safetensors;
 
 pub const Shape = struct {
     rank: u8,

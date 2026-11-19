@@ -76,6 +76,8 @@ pub const flint = @import("families/flint/flint.zig");
 pub const lfm2_moe = @import("families/lfm2_moe/lfm2_moe.zig");
 pub const flashnext_pack = @import("families/flashnext/pack.zig");
 pub const lfm3 = @import("families/lfm3/lfm3.zig");
+/// Hy4 Flash family declarations shared with the native CUDA registration.
+pub const hy4_flash = @import("families/hy_v4_flash/contract.zig");
 
 test {
     std.testing.refAllDecls(@This());
@@ -117,6 +119,7 @@ test {
     _ = @import("families/lfm2_moe/state.zig");
     _ = @import("families/lfm2_moe/dspark_test.zig");
     _ = @import("families/deepseek_v41/metal/glue.zig"); // the launch wrappers' shape refusals, reached by no other test root
+    _ = hy4_flash; // the Hy4 family declarations shared with the CUDA registration
 }
 
 pub const lane_projection = @import("core/lane_projection.zig");

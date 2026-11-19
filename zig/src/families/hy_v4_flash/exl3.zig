@@ -2,7 +2,7 @@
 const std = @import("std");
 const config = @import("config.zig");
 const weights = @import("weights.zig");
-const fmt = @import("../../core/exl3_format.zig");
+const fmt = @import("core").exl3_format;
 
 pub const bits_min: f32 = 1;
 pub const bits_max: f32 = 8;
