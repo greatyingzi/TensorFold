@@ -30,6 +30,13 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 24 (decode step unblocked, serving registered)
+- Root cause of the 1-layer GPU step hang: IHC kernels called `__shfl_xor_sync` inside `if (lane == 0)`; only one lane of the warp participated. Fixed in both collapse and hc_head; added a gate-only kernel for correct MoE post gates.
+- Full 42-layer GPU step now completes with real 3bpw weights: finite logits (min -10.1, max +9.4), ~24-41 ms/token. Attention is temporarily zeroed (correct only for the first token with an empty cache); KV cache write is still pending.
+- lm_head in the pack is fp16 and norm tensors are bf16; both are converted at load (norms to fp32, lm_head to bf16) — without this logits were NaN.
+- Hy4 family serving registration skeleton lands in native/cuda_families.zig, build/cuda_engines.zig, tensorfold.zig, with backend.zig/native.zig/contract.zig; host builds and `check-native-cuda-host` are green.
+- `tensorfold-native serve` currently refuses the pack: the generic loader accounts 464 GiB against a 101 GiB GPU budget. The GPU path (gpu_pack) only uploads 63 GiB, so the serving backend must be switched to the streaming GPU loader before deployment.
+
 ## Progress round 21 (full pack load + IHC kernels)
 - CUDA IHC kernels (collapse / stream_update / hc_head) implemented in `zig/kernels/cuda/hy4_ihc.cu`, bound in `zig/src/cuda/hy4_ihc.zig`, fatbin registered; compiles with nvcc.
 - `zig/src/families/hy_v4_flash/gpu_pack.zig` loads the whole real pack into device weights: 42 layers, 6.55 GB of EXL3 dense weights + embed/lm_head + all HC/norm/sink/gate tensors. `hy4-gpu-bench packcheck /pack` passes.

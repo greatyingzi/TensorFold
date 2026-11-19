@@ -14,6 +14,7 @@ pub const Ihc = struct {
     collapse_fn: Function,
     update_fn: Function,
     head_fn: Function,
+    gates_fn: Function,
 
     pub fn load(d: *const Driver) !Ihc {
         if (!kernels.available) return error.BuiltWithoutKernels;
@@ -24,6 +25,7 @@ pub const Ihc = struct {
             .collapse_fn = try mod.function("tf_hy4_ihc_collapse"),
             .update_fn = try mod.function("tf_hy4_stream_update"),
             .head_fn = try mod.function("tf_hy4_hc_head"),
+            .gates_fn = try mod.function("tf_hy4_ihc_gates"),
         };
     }
 
@@ -70,6 +72,26 @@ pub const Ihc = struct {
         a.add(int(H));
         a.add(int(HC));
         try launch_.launch(self.update_fn, .{ .grid = .{ .x = @intCast(rows), .y = @intCast(HC) }, .block = .{ .x = 256 } }, s, &a);
+    }
+
+
+    /// Write pre[HC] and post[HC] gate vectors for the MoE residual update.
+    pub fn gates(self: *const Ihc, s: Stream, streams: u64, fn_w: u64, base: u64, scale: u64, pre: u64, post: u64, rows: usize, H: usize, HC: usize, eps: f32, magnitude: f32) !void {
+        if (rows == 0 or H == 0 or HC == 0) return;
+        const int = struct { fn f(v: usize) c_int { return @intCast(v); } }.f;
+        var a: Args = .{};
+        a.add(streams);
+        a.add(fn_w);
+        a.add(base);
+        a.add(scale);
+        a.add(pre);
+        a.add(post);
+        a.add(int(rows));
+        a.add(int(H));
+        a.add(int(HC));
+        a.add(eps);
+        a.add(magnitude);
+        try launch_.launch(self.gates_fn, .{ .grid = .{ .x = @intCast(rows) }, .block = .{ .x = 256 } }, s, &a);
     }
 
     /// Final stream collapse [rows][HC][H] -> out [rows][H] bf16.

@@ -32,6 +32,13 @@ __device__ __forceinline__ float sigmoid_f32(float x) {
 
 // A fixed-order butterfly; f64 partials make the tree order irrelevant at
 // bf16 output precision, while keeping the host matvec / norm accumulation.
+__device__ __forceinline__ float s_mix_f(double s_mix[MAX_MIX][WARPS], int i) {
+    double sum = 0.0;
+#pragma unroll
+    for (int k = 0; k < WARPS; ++k) sum += s_mix[i][k];
+    return static_cast<float>(sum);
+}
+
 __device__ __forceinline__ double warp_sum(double v) {
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) v += __shfl_xor_sync(0xFFFFFFFFu, v, off);
@@ -128,6 +135,73 @@ tf_hy4_ihc_collapse(const __nv_bfloat16* streams, const float* fn, const float* 
             }
         }
         out[static_cast<size_t>(row) * H + h] = __float2bfloat16_rn(acc);
+    }
+}
+
+
+// Gate-only helper: write pre[HC] and post[HC] for the streams of each row.
+// Used by the MoE residual update, which needs the post gates rather than a collapsed vector.
+extern "C" __global__ void __launch_bounds__(256)
+tf_hy4_ihc_gates(const __nv_bfloat16* streams, const float* fn, const float* base,
+                 const float* scale, float* pre_out, float* post_out,
+                 int rows, int H, int HC, float eps, float magnitude) {
+    const int row = blockIdx.x;
+    if (row >= rows) return;
+    const int tid = threadIdx.x;
+    const int lane = tid & 31;
+    const int warp = tid >> 5;
+    const int N = HC * H;
+    const int nmix = 2 * HC;
+    const size_t soff = static_cast<size_t>(row) * N;
+
+    __shared__ double s_mix[MAX_MIX][WARPS];
+    __shared__ double s_ss[WARPS];
+    __shared__ float s_pre[MAX_HC];
+    __shared__ float s_post[MAX_HC];
+
+    double mix[MAX_MIX];
+#pragma unroll
+    for (int i = 0; i < MAX_MIX; ++i) mix[i] = 0.0;
+    double ss = 0.0;
+    for (int j = tid; j < N; j += THREADS) {
+        const double d = static_cast<double>(bf2f(streams[soff + j]));
+        ss += d * d;
+#pragma unroll
+        for (int i = 0; i < MAX_MIX; ++i) {
+            if (i < nmix) mix[i] += static_cast<double>(fn[static_cast<size_t>(i) * N + j]) * d;
+        }
+    }
+    const double ss_w = warp_sum(ss);
+    double mix_w[MAX_MIX];
+#pragma unroll
+    for (int i = 0; i < MAX_MIX; ++i) mix_w[i] = warp_sum(mix[i]);
+    if (lane == 0) {
+        s_ss[warp] = ss_w;
+#pragma unroll
+        for (int i = 0; i < MAX_MIX; ++i) s_mix[i][warp] = mix_w[i];
+    }
+    __syncthreads();
+    if (tid == 0) {
+        double total = 0.0;
+#pragma unroll
+        for (int w = 0; w < WARPS; ++w) total += s_ss[w];
+        const float norm = static_cast<float>(1.0 / sqrt(total / static_cast<double>(N) + static_cast<double>(eps)));
+#pragma unroll
+        for (int c = 0; c < MAX_HC; ++c) {
+            if (c < HC) {
+                const float pl = __fmul_rn(s_mix_f(s_mix, c), norm);
+                const float pa = __fadd_rn(__fmul_rn(pl, scale[0]), base[c]);
+                s_pre[c] = __fadd_rn(sigmoid_f32(pa), eps);
+                const float ql = __fmul_rn(s_mix_f(s_mix, HC + c), norm);
+                const float qa = __fadd_rn(__fmul_rn(ql, scale[1]), base[HC + c]);
+                s_post[c] = __fadd_rn(__fmul_rn(magnitude, sigmoid_f32(qa)), eps);
+            }
+        }
+    }
+    __syncthreads();
+    if (tid < HC) {
+        pre_out[static_cast<size_t>(row) * HC + tid] = s_pre[tid];
+        post_out[static_cast<size_t>(row) * HC + tid] = s_post[tid];
     }
 }
 

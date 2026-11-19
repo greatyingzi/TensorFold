@@ -70,6 +70,7 @@ pub fn main(init: std.process.Init) !void {
     const gu2 = try dev(a, &driver, rows * 1536 * 2);
     const gu_out = try dev(a, &driver, rows * 1536 * 2);
     const ffn = try dev(a, &driver, rows * H * 2);
+    const gates = try dev(a, &driver, rows * HC * 2 * 4);
     const final = try dev(a, &driver, rows * H * 2);
     const logits = try dev(a, &driver, rows * p.cfg.vocab * 4);
 
@@ -144,7 +145,8 @@ pub fn main(init: std.process.Init) !void {
             try ffn_buf.fill8(0, s.handle);
         }
         if (li == 0) std.debug.print("step pre update\n", .{});
-        try ihc.update(s, streams, ffn, p.ffn_base[li], rows, H, HC);
+        try ihc.gates(s, streams, p.ffn_fn[li], p.ffn_base[li], p.ffn_scale[li], gates, gates + rows * HC * 4, rows, H, HC, p.cfg.hc_eps, p.cfg.hc_magnitude);
+        try ihc.update(s, streams, ffn, gates + rows * HC * 4, rows, H, HC);
     }
     try ihc.head(s, streams, p.head_fn, p.head_base, p.head_scale, final, rows, H, HC, p.cfg.hc_eps);
     try norms.rms(s, final, .bf16, p.final_norm, final, .bf16, rows, H, p.cfg.eps);
