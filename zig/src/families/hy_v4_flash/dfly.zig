@@ -1,7 +1,4 @@
-//! DFly2 drafter over the checkpoint's real model.dfly_layers.N tensors: five dense
-//! blocks, each a gated MLA (32 heads, nope 192, rope 64, v 256, learned sink) with SwiGLU,
-//! chained over the main model's target-layer hiddens. The fusion of a target hidden with
-//! the draft stream is parameterized; the real-weight agreement probe picks the variant.
+// ! DFly2 drafter over the checkpoint's real model.dfly_layers.N tensors: five dense ! blocks, each a gated MLA (32 heads, nope 192, rope 64, v 256, learned sink) with SwiGLU, ! chained over the main model's target-layer hiddens. The fusion of a target hidden with ! the draft stream is parameterized; the real-weight agreement probe picks the variant.
 const std = @import("std");
 const config = @import("config.zig");
 const weights = @import("weights.zig");
@@ -158,11 +155,11 @@ pub const Drafter = struct {
             }
             self.kv[li].append(kn_all, k_rope, v_all);
 
-            // scores with the learned sink as an extra softmax column, as the main attention
+// scores with the learned sink as an extra softmax column, as the main attention
             const sink = try f32s(self.bag, try self.nm(a, li, "self_attn.sinks"));
             try matvecW(gate, self.bag, try self.nm(a, li, "self_attn.gate_proj.weight"), tmp, heads * vdim, h);
             const scale = 1.0 / @sqrt(@as(f32, @floatFromInt(nope + rope)));
-            // attend causal over all keys incl. this step's
+// attend causal over all keys incl. this step's
             const kv = &self.kv[li];
             const total = kv.len;
             for (0..heads) |hh| {
