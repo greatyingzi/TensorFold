@@ -30,6 +30,12 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 27 (full-model CLI verified; serve crash root-caused)
+- **CLI `hy4-gpu-step /pack 0` runs all 42 layers with per-layer geometry (64-head sliding layers included): finite logits (min −9.12, max 8.74), 54.5 ms/token = 18.4 tok/s, RC=0.** The full GPU forward math is verified end-to-end on the real 3bpw pack.
+- Serve-side segfault root cause: the runner's attention scratch buffers were still sized for 32 heads — L2's 64-head q_b decode wrote 32 KB into a 16 KB `qfull` (heap corruption). A batch of resize edits had silently failed to apply. Fixed by actually resizing to `max_heads`; the serve no longer segfaults.
+- Remaining serve issue: first request now fails with CUDA `Invalid` at L0 (before merge) — no crash. Next step is an A/B diff against the known-good CLI path, which runs the same math successfully.
+- CLI absorb path also fixed: direct BF16 `kv_b.weight` download with per-layer sizes replaced the overflowing identity decode.
+
 ## Progress round 26 (KV cache attempt reverted)
 - A first KV-cache implementation (per-layer [42][4096][576] BF16 cache, latent absorb, roped tail, chunks/merge/expandV) compiled on host but **segfaulted in Runner.init on DGX** before the GPU decode log line. The working service was restored (container `hy4serve10`, 137.9 s load, `/health` OK, 33 tok/s).
 - Root-cause candidates for the segfault: identity-decoding kv_b with 512 rows against scratch reserved for 128 rows; sink tensor is F32 [32] in the pack (not BF16), so any BF16 conversion is wrong. A corrected attempt is in progress.
