@@ -161,9 +161,16 @@ pub fn forwardBench(gpu: Gpu) !void {
                 try a4.decode(s, x_in[7][li], xs_in[7][li], lay[7][li], outs[7][li], rows);
                 try a4.decode(s, x_in[8][li], xs_in[8][li], lay[8][li], outs[8][li], rows);
                 try a4.decode(s, x_in[9][li], xs_in[9][li], lay[9][li], outs[9][li], rows);
-                for (0..top_k) |_| {
-                    try a4.decode(s, x_in[10][li], xs_in[10][li], lay[10][li], outs[10][li], rows);
-                    try a4.decode(s, x_in[11][li], xs_in[11][li], lay[11][li], outs[11][li], rows);
+                const Out = qlinear.Affine4Kernels.Out;
+                var stem_outs: [top_k]Out = undefined;
+                var down_outs: [top_k]Out = undefined;
+                for (0..top_k) |e| {
+                    stem_outs[e] = .{ .q = lay[10][li], .out = outs[10][li] };
+                    down_outs[e] = .{ .q = lay[11][li], .out = outs[11][li] };
+                }
+                for (0..4) |g| {
+                    try a4.gemvMany(s, x_in[10][li], xs_in[10][li], stem_outs[g * 4 ..][0..4], rows);
+                    try a4.gemvMany(s, x_in[11][li], xs_in[11][li], down_outs[g * 4 ..][0..4], rows);
                 }
                 try mla.absorbQ(s, qa, nope, wk, qa, lw + rw, rows, heads, nope, lw);
                 try mla.chunks(s, qa, caches[li], poss[li], .{ .po = po, .pm = pm, .pl = pl }, rows, heads, nch, 0.0625);
@@ -207,7 +214,6 @@ pub fn realForward(gpu: Gpu, dir: []const u8) !void {
 
     _ = dir;
     _ = a;
-    _ = s;
     std.debug.print("realforward: pack loading not yet wired\n", .{});
 }
 

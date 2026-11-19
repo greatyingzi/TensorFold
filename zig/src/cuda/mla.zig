@@ -165,6 +165,15 @@ pub const Mla = struct {
         try launch_.launch(m.merge_part_fn, .{ .grid = .{ .x = @intCast(rows), .y = @intCast(heads) }, .block = .{ .x = 128 } }, s, &a);
     }
 
+    /// merge_part with Hy4's learned sink in the denominator: l += exp(sink - m).
+    pub fn mergePartSink(m: *const Mla, s: Stream, p: Partials, out: Partials, rows: usize, heads: usize, nch: usize, sinks: u64) !void {
+        if (rows == 0) return;
+        const f = m.merge_part_sink_fn orelse return error.LatentShape;
+        var a: Args = .{};
+        inline for (.{ p.po, p.pm, p.pl, out.po, out.pm, out.pl, i64of(rows), i64of(heads), cint(nch), sinks }) |v| a.add(v);
+        try launch_.launch(f, .{ .grid = .{ .x = @intCast(rows), .y = @intCast(heads) }, .block = .{ .x = 128 } }, s, &a);
+    }
+
     /// o [rows][heads][dv] bf16 *= bf16(sigmoid(g [rows][gs] at column h)): the head-wise output gate, in place.
     pub fn gate(m: *const Mla, s: Stream, o: u64, g: u64, gs: usize, rows: usize, heads: usize, dv: usize) !void {
         if (dv == 0 or dv > 1024 or gs < heads) return error.GateShape;
