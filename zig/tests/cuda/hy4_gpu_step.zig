@@ -55,7 +55,7 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("kernels loaded\n", .{});
     const H = p.cfg.hidden;
     const HC = p.cfg.hc;
-    const heads = p.cfg.heads;
+    const heads_max = p.cfg.max_heads; // buffers take the max; the step loop uses each layer's own
     const nope = p.cfg.nope;
     const rope = p.cfg.rope;
     const rows: usize = 1;
@@ -85,25 +85,25 @@ pub fn main(init: std.process.Init) !void {
     var pos_buf = try cuda.memory.DeviceBuffer.fromHost(&driver, std.mem.asBytes(&@as(i32, 0)));
     defer pos_buf.free();
     const qn = try dev(a, &driver, rows * p.cfg.q_lora * 2);
-    const qfull = try dev(a, &driver, rows * heads * (nope + rope) * 2);
+    const qfull = try dev(a, &driver, rows * heads_max * (nope + rope) * 2);
     const kva = try dev(a, &driver, rows * (p.cfg.kv_lora + rope) * 4);
     const kvn = try dev(a, &driver, rows * p.cfg.kv_lora * 2);
-    const kvb = try dev(a, &driver, rows * heads * (p.cfg.nope + p.cfg.vdim) * 2);
-    const qa = try dev(a, &driver, rows * heads * KW * 2);
+    const kvb = try dev(a, &driver, rows * heads_max * (p.cfg.nope + p.cfg.vdim) * 2);
+    const qa = try dev(a, &driver, rows * heads_max * KW * 2);
     const kvabf = try dev(a, &driver, KW * 2);
-    const ol = try dev(a, &driver, rows * heads * p.cfg.kv_lora * 2);
+    const ol = try dev(a, &driver, rows * heads_max * p.cfg.kv_lora * 2);
     const nch_max = cache_rows / chunk;
     const pp = cuda.mla.Partials{
-        .po = try dev(a, &driver, nch_max * rows * heads * p.cfg.kv_lora * 4),
-        .pm = try dev(a, &driver, nch_max * rows * heads * 4),
-        .pl = try dev(a, &driver, nch_max * rows * heads * 4),
+        .po = try dev(a, &driver, nch_max * rows * heads_max * p.cfg.kv_lora * 4),
+        .pm = try dev(a, &driver, nch_max * rows * heads_max * 4),
+        .pl = try dev(a, &driver, nch_max * rows * heads_max * 4),
     };
     const merged = cuda.mla.Partials{
-        .po = try dev(a, &driver, rows * heads * p.cfg.kv_lora * 4),
-        .pm = try dev(a, &driver, rows * heads * 4),
-        .pl = try dev(a, &driver, rows * heads * 4),
+        .po = try dev(a, &driver, rows * heads_max * p.cfg.kv_lora * 4),
+        .pm = try dev(a, &driver, rows * heads_max * 4),
+        .pl = try dev(a, &driver, rows * heads_max * 4),
     };
-    const attn_out = try dev(a, &driver, rows * heads * p.cfg.vdim * 2);
+    const attn_out = try dev(a, &driver, rows * heads_max * p.cfg.vdim * 2);
     const branch = try dev(a, &driver, rows * H * 2);
     const gu = try dev(a, &driver, rows * 1536 * 2);
     const gu2 = try dev(a, &driver, rows * 1536 * 2);
@@ -115,7 +115,8 @@ pub fn main(init: std.process.Init) !void {
     var cache: [42]u64 = undefined;
     var wk: [42]u64 = undefined;
     var wv: [42]u64 = undefined;
-    for (0..p.cfg.layers) |li| {
+    const nlayers: usize = if (args.len > 3) try std.fmt.parseInt(usize, args[3], 10) else p.cfg.layers;
+    for (0..nlayers) |li| {
         cache[li] = try dev(a, &driver, cache_rows * KW * 2);
         var view = cuda.memory.DeviceBuffer{ .d = &driver, .ptr = cache[li], .len = cache_rows * KW * 2 };
         try view.fill8(0, s.handle);
@@ -124,7 +125,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Grow every scratch buffer once before any launch. The identity decode below
     // uses 128-row blocks, the same maximum this reserve covers.
-    for (0..p.cfg.layers) |li| {
+    for (0..nlayers) |li| {
         const L = p.w[li];
         try dense.reserve(s, L.q_a);
         try dense.reserve(s, L.q_b);
@@ -139,35 +140,36 @@ pub fn main(init: std.process.Init) !void {
     try s.synchronize();
     std.debug.print("scratch reserved\n", .{});
 
-    // The pack stores kv_b quantized only: decode it against an identity to recover
-    // the BF16 absorb (key) and expand (value) weights, split per head.
+    // Rebuild the absorb/expand weights from the pack's original BF16 kv_b weight.
     {
         const k = p.cfg.kv_lora;
         const per = nope + p.cfg.vdim;
-        const kv_out = heads * per;
-        const block: usize = 128;
-        const id_host = try a.alloc(u16, k * k);
-        @memset(id_host, 0);
-        for (0..k) |i| id_host[i * k + i] = 0x3f80; // bf16 1.0
-        const id_ptr = try copy(a, &driver, std.mem.sliceAsBytes(id_host));
-        var full = try cuda.memory.DeviceBuffer.alloc(&driver, k * kv_out * 2);
-        defer full.free();
-        const host_full = try a.alloc(u16, k * kv_out);
-        const wk_host = try a.alloc(u16, heads * nope * k);
-        const wv_host = try a.alloc(u16, heads * p.cfg.vdim * k);
-        for (0..p.cfg.layers) |li| {
-            for (0..k) |b0| {
-                const n = @min(block, k - b0);
-                try dense.decode(s, p.w[li].kv_b, id_ptr + @as(u64, b0) * k * 2, .bf16, n, full.ptr + @as(u64, b0) * kv_out * 2, .bf16);
+        const kv_out_max = p.cfg.max_heads * per;
+        const host_full = try a.alloc(u16, k * kv_out_max);
+        const wk_host = try a.alloc(u16, p.cfg.max_heads * nope * k);
+        const wv_host = try a.alloc(u16, p.cfg.max_heads * p.cfg.vdim * k);
+        for (0..nlayers) |li| {
+            const hd = p.w[li].heads;
+            const kv_out = hd * per;
+            var src = cuda.memory.DeviceBuffer{ .d = &driver, .ptr = p.w[li].kv_b_w, .len = k * kv_out * 2 };
+            try src.download(0, std.mem.sliceAsBytes(host_full)[0 .. k * kv_out * 2]);
+            // kv_b.weight is row-major [kv_out, k]: element (o, c) sits at o*k + c.
+            for (0..hd) |h| {
+                for (0..nope) |i| {
+                    const o = h * per + i;
+                    for (0..k) |c| wk_host[(h * nope + i) * k + c] = host_full[o * k + c];
+                }
+                for (0..p.cfg.vdim) |i| {
+                    const o = h * per + nope + i;
+                    for (0..k) |c| wv_host[(h * p.cfg.vdim + i) * k + c] = host_full[o * k + c];
+                }
             }
-            try s.synchronize();
-            try full.download(0, std.mem.sliceAsBytes(host_full));
-            for (0..heads) |h| {
-                for (0..nope) |i| @memcpy(wk_host[(h * nope + i) * k ..][0..k], host_full[(h * per + i) * kv_out ..][0..k]);
-                for (0..p.cfg.vdim) |i| @memcpy(wv_host[(h * p.cfg.vdim + i) * k ..][0..k], host_full[(h * per + nope + i) * kv_out ..][0..k]);
-            }
-            wk[li] = try copy(a, &driver, std.mem.sliceAsBytes(wk_host));
-            wv[li] = try copy(a, &driver, std.mem.sliceAsBytes(wv_host));
+            const wk_l = try a.alloc(u16, hd * nope * k);
+            const wv_l = try a.alloc(u16, hd * p.cfg.vdim * k);
+            @memcpy(wk_l, wk_host[0..hd * nope * k]);
+            @memcpy(wv_l, wv_host[0..hd * p.cfg.vdim * k]);
+            wk[li] = try copy(a, &driver, std.mem.sliceAsBytes(wk_l));
+            wv[li] = try copy(a, &driver, std.mem.sliceAsBytes(wv_l));
         }
         try s.synchronize();
     }
@@ -184,9 +186,9 @@ pub fn main(init: std.process.Init) !void {
     const streams = streams_buf.ptr;
     const host_kva_f32 = try a.alloc(f32, KW);
     const host_kva_bf = try a.alloc(u16, KW);
-    const host_ol_f32 = try a.alloc(f32, heads * p.cfg.kv_lora);
-    const host_ol_bf = try a.alloc(u16, heads * p.cfg.kv_lora);
-    const host_l = try a.alloc(f32, heads);
+    const host_ol_f32 = try a.alloc(f32, p.cfg.max_heads * p.cfg.kv_lora);
+    const host_ol_bf = try a.alloc(u16, p.cfg.max_heads * p.cfg.kv_lora);
+    const host_l = try a.alloc(f32, p.cfg.max_heads);
     std.debug.print("embed copied\n", .{});
 
     var t0 = try cuda.Event.init(&driver, true);
@@ -197,8 +199,9 @@ pub fn main(init: std.process.Init) !void {
     const pos: usize = 0; // this CLI runs one step; the serving Runner keeps a counter
     const nch = (pos + 1 + chunk - 1) / chunk;
     const scale: f32 = 1.0 / @sqrt(@as(f32, @floatFromInt(nope + rope)));
-    for (0..p.cfg.layers) |li| {
+    for (0..nlayers) |li| {
         const L = p.w[li];
+        const heads = L.heads;
         try ihc.collapse(s, streams, p.attn_fn[li], p.attn_base[li], p.attn_scale[li], mixed, rows, H, HC, p.cfg.hc_eps, p.cfg.hc_magnitude, false);
         if (li == 0) std.debug.print("step pre norms1\n", .{});
         try norms.rms(s, mixed, .bf16, p.input_norm[li], xbuf, .bf16, rows, H, p.cfg.eps);
@@ -209,10 +212,10 @@ pub fn main(init: std.process.Init) !void {
         try dense.decode(s, L.q_b, qn, .bf16, rows, qfull, .bf16);
         try mla.rope(s, .{
             .x = qfull + nope * 2,
-            .x_row = heads * (nope + rope),
+            .x_row = heads_max * (nope + rope),
             .x_head = nope + rope,
             .out = qfull + nope * 2,
-            .o_row = heads * (nope + rope),
+            .o_row = heads_max * (nope + rope),
             .o_head = nope + rope,
         }, rows, heads, pos_buf.ptr, inv_freq.ptr, 1.0);
         if (li == 0) std.debug.print("step pre kva\n", .{});
@@ -247,12 +250,12 @@ pub fn main(init: std.process.Init) !void {
         try mla.chunks(s, qa, cache[li], pos_buf.ptr, pp, rows, heads, nch, scale);
         // p.sinks[li] is FP32 [heads] in the pack: no dtype conversion.
         try mla.mergePartSink(s, pp, merged, rows, heads, nch, p.sinks[li]);
-        var merged_buf = cuda.memory.DeviceBuffer{ .d = &driver, .ptr = merged.po, .len = rows * heads * p.cfg.kv_lora * 4 };
+        var merged_buf = cuda.memory.DeviceBuffer{ .d = &driver, .ptr = merged.po, .len = rows * heads_max * p.cfg.kv_lora * 4 };
         try merged_buf.download(0, std.mem.sliceAsBytes(host_ol_f32));
-        var l_buf = cuda.memory.DeviceBuffer{ .d = &driver, .ptr = merged.pl, .len = rows * heads * 4 };
+        var l_buf = cuda.memory.DeviceBuffer{ .d = &driver, .ptr = merged.pl, .len = rows * heads_max * 4 };
         try l_buf.download(0, std.mem.sliceAsBytes(host_l));
         for (host_ol_bf, host_ol_f32, 0..) |*b, v, i| b.* = bf16(v / host_l[i / p.cfg.kv_lora]);
-        var ol_buf = cuda.memory.DeviceBuffer{ .d = &driver, .ptr = ol, .len = rows * heads * p.cfg.kv_lora * 2 };
+        var ol_buf = cuda.memory.DeviceBuffer{ .d = &driver, .ptr = ol, .len = rows * heads_max * p.cfg.kv_lora * 2 };
         try ol_buf.upload(0, std.mem.sliceAsBytes(host_ol_bf));
         try mla.expandV(s, ol, wv[li], attn_out, rows, heads, p.cfg.vdim, p.cfg.kv_lora);
         if (li == 0) std.debug.print("step pre gate\n", .{});

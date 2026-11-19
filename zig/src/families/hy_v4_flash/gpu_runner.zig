@@ -129,6 +129,9 @@ pub const Runner = struct {
             @memcpy(wv_l, wv_host[0..hd * vdim * k]);
             r.wk[li] = (try r.fromHost(std.mem.sliceAsBytes(wk_l))).ptr;
             r.wv[li] = (try r.fromHost(std.mem.sliceAsBytes(wv_l))).ptr;
+            // release each pinned staging copy before the next: 84 large uploads
+            // otherwise exhaust the pinned pool and fault the copies.
+            try r.s.synchronize();
         }
         try r.s.synchronize();
         std.debug.print("hy4 runner init: absorb weights ready ({d} layers)\n", .{cfg.layers});
@@ -153,23 +156,23 @@ pub const Runner = struct {
         const HC = p.cfg.hc;
         r.host_streams = try a.alloc(u16, H * HC);
         r.host_logits = try a.alloc(f32, p.cfg.vocab);
-        r.gate_logits = try r.ptr(rows * p.cfg.heads * p.cfg.vdim * 4);
+        r.gate_logits = try r.ptr(rows * p.cfg.max_heads * p.cfg.vdim * 4);
         r.host_kva_f32 = try a.alloc(f32, KW);
         r.host_kva_bf = try a.alloc(u16, KW);
-        r.host_ol_f32 = try a.alloc(f32, p.cfg.heads * p.cfg.kv_lora);
-        r.host_ol_bf = try a.alloc(u16, p.cfg.heads * p.cfg.kv_lora);
-        r.host_l = try a.alloc(f32, p.cfg.heads);
+        r.host_ol_f32 = try a.alloc(f32, p.cfg.max_heads * p.cfg.kv_lora);
+        r.host_ol_bf = try a.alloc(u16, p.cfg.max_heads * p.cfg.kv_lora);
+        r.host_l = try a.alloc(f32, p.cfg.max_heads);
         r.streams = try r.buffer(rows * H * HC * 2);
         r.pdev = .{
             .mixed = try r.ptr(rows * H * 2),
             .xbuf = try r.ptr(rows * H * 2),
             .qn = try r.ptr(rows * p.cfg.q_lora * 2),
-            .qfull = try r.ptr(rows * p.cfg.heads * (p.cfg.nope + p.cfg.rope) * 2),
+            .qfull = try r.ptr(rows * p.cfg.max_heads * (p.cfg.nope + p.cfg.rope) * 2),
             .kva = try r.ptr(rows * (p.cfg.kv_lora + p.cfg.rope) * 4),
             .kvn = try r.ptr(rows * p.cfg.kv_lora * 2),
-            .kvb = try r.ptr(rows * p.cfg.heads * (p.cfg.nope + p.cfg.vdim) * 2),
-            .qa = try r.ptr(rows * p.cfg.heads * KW * 2),
-            .attn_out = try r.ptr(rows * p.cfg.heads * p.cfg.vdim * 2),
+            .kvb = try r.ptr(rows * p.cfg.max_heads * (p.cfg.nope + p.cfg.vdim) * 2),
+            .qa = try r.ptr(rows * p.cfg.max_heads * KW * 2),
+            .attn_out = try r.ptr(rows * p.cfg.max_heads * p.cfg.vdim * 2),
             .branch = try r.ptr(rows * H * 2),
             .gu = try r.ptr(rows * 1536 * 2),
             .gu2 = try r.ptr(rows * 1536 * 2),
@@ -182,17 +185,17 @@ pub const Runner = struct {
         r.inv_freq = try r.fromHost(std.mem.sliceAsBytes(&cuda.mla.ropeFreqs(6e6)));
         r.pos_dev = try r.fromHost(std.mem.asBytes(&@as(i32, 0)));
         r.kvabf_dev = try r.buffer(KW * 2);
-        r.ol_dev = try r.buffer(rows * p.cfg.heads * p.cfg.kv_lora * 2);
+        r.ol_dev = try r.buffer(rows * p.cfg.max_heads * p.cfg.kv_lora * 2);
         const nch_max = cache_rows / chunk;
         r.parts = .{
-            .po = try r.ptr(nch_max * rows * p.cfg.heads * p.cfg.kv_lora * 4),
-            .pm = try r.ptr(nch_max * rows * p.cfg.heads * 4),
-            .pl = try r.ptr(nch_max * rows * p.cfg.heads * 4),
+            .po = try r.ptr(nch_max * rows * p.cfg.max_heads * p.cfg.kv_lora * 4),
+            .pm = try r.ptr(nch_max * rows * p.cfg.max_heads * 4),
+            .pl = try r.ptr(nch_max * rows * p.cfg.max_heads * 4),
         };
         r.merged = .{
-            .po = try r.ptr(rows * p.cfg.heads * p.cfg.kv_lora * 4),
-            .pm = try r.ptr(rows * p.cfg.heads * 4),
-            .pl = try r.ptr(rows * p.cfg.heads * 4),
+            .po = try r.ptr(rows * p.cfg.max_heads * p.cfg.kv_lora * 4),
+            .pm = try r.ptr(rows * p.cfg.max_heads * 4),
+            .pl = try r.ptr(rows * p.cfg.max_heads * 4),
         };
         std.debug.print("hy4 runner init: scratch allocated\n", .{});
         for (0..p.cfg.layers) |li| {
@@ -287,7 +290,7 @@ pub const Runner = struct {
             try dense.decode(self.s, L.q_a, P.xbuf, .bf16, rows, P.qn, .bf16);
             try norms.rms(self.s, P.qn, .bf16, p.q_a_norm[li], P.qn, .bf16, rows, cfg.q_lora, cfg.eps);
             try dense.decode(self.s, L.q_b, P.qn, .bf16, rows, P.qfull, .bf16);
-            if (diag and li <= 1) {
+            if (diag and li <= 2) {
                 var pb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.qfull, .len = 8 };
                 var ph: [4]u16 = undefined;
                 try pb.download(0, std.mem.sliceAsBytes(&ph));
@@ -304,7 +307,7 @@ pub const Runner = struct {
             try drows.rows(self.s, P.xbuf, H, L.kv_a_w, P.kva, cfg.kv_lora + rope, rows, cfg.kv_lora + rope, H);
             try norms.rms(self.s, P.kva, .f32, p.kv_a_norm[li], P.kvn, .bf16, rows, cfg.kv_lora, cfg.eps);
             try dense.decode(self.s, L.kv_b, P.kvn, .bf16, rows, P.kvb, .bf16);
-            if (diag and li <= 1) {
+            if (diag and li <= 2) {
                 var pb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.kvb, .len = 8 };
                 var ph: [4]u16 = undefined;
                 try pb.download(0, std.mem.sliceAsBytes(&ph));
@@ -328,14 +331,28 @@ pub const Runner = struct {
             }, 1, 1, self.pos_dev.ptr, self.inv_freq.ptr, 1.0);
             var slot = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.cache[li].ptr + self.pos * KW * 2, .len = KW * 2 };
             try slot.copyFrom(0, self.kvabf_dev.ptr, KW * 2, self.s.handle);
+            if (diag and li == 2) std.debug.print("hy4 diag L2 cachewrite done\n", .{});
             // Absorb q_nope into the latent columns, then place the roped q tail in 512..575.
             try mla.absorbQ(self.s, P.qfull, nope + rope, self.wk[li], P.qa, KW, rows, heads, nope, cfg.kv_lora);
+            if (diag and li == 2) std.debug.print("hy4 diag L2 absorb done\n", .{});
             for (0..heads) |h| {
                 var tail = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.qa + (h * KW + cfg.kv_lora) * 2, .len = rope * 2 };
                 try tail.copyFrom(0, P.qfull + (h * (nope + rope) + nope) * 2, rope * 2, self.s.handle);
             }
+            if (diag and li == 2) {
+                var pb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.qa, .len = 8 };
+                var ph: [4]u16 = undefined;
+                try pb.download(0, std.mem.sliceAsBytes(&ph));
+                std.debug.print("hy4 diag L2 qa v0=0x{x}\n", .{ph[0]});
+            }
             try mla.chunks(self.s, P.qa, self.cache[li].ptr, self.pos_dev.ptr, self.parts, rows, heads, nch, scale);
             // p.sinks[li] is FP32 [heads] in the pack: no dtype conversion.
+            if (diag and li == 2) {
+                var pb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.parts.po, .len = 8 };
+                var ph: [2]f32 = undefined;
+                try pb.download(0, std.mem.sliceAsBytes(&ph));
+                std.debug.print("hy4 diag L2 parts po0={d:.4}\n", .{ph[0]});
+            }
             try mla.mergePartSink(self.s, self.parts, self.merged, rows, heads, nch, p.sinks[li]);
             var merged_buf = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.merged.po, .len = rows * heads * cfg.kv_lora * 4 };
             try merged_buf.download(0, std.mem.sliceAsBytes(self.host_ol_f32));
@@ -345,10 +362,10 @@ pub const Runner = struct {
                 const l = self.host_l[i / cfg.kv_lora];
                 b.* = bf16(if (l > 1e-6 and std.math.isFinite(l)) v / l else v);
             }
-            if (diag and li <= 1) std.debug.print("hy4 diag L{d} merge l0={d:.4} ol0={d:.4}\n", .{ li, self.host_l[0], self.host_ol_f32[0] });
+            if (diag and li <= 2) std.debug.print("hy4 diag L{d} merge l0={d:.4} ol0={d:.4}\n", .{ li, self.host_l[0], self.host_ol_f32[0] });
             try self.ol_dev.upload(0, std.mem.sliceAsBytes(self.host_ol_bf));
             try mla.expandV(self.s, self.ol_dev.ptr, self.wv[li], P.attn_out, rows, heads, cfg.vdim, cfg.kv_lora);
-            if (diag and li <= 1) {
+            if (diag and li <= 2) {
                 var pb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.attn_out, .len = 8 };
                 var ph: [4]u16 = undefined;
                 try pb.download(0, std.mem.sliceAsBytes(&ph));
