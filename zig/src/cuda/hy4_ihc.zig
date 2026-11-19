@@ -17,6 +17,7 @@ pub const Ihc = struct {
     gates_fn: Function,
     gate_sig_fn: Function,
     cast_fn: Function,
+    swiglu_fn: Function,
 
     pub fn load(d: *const Driver) !Ihc {
         if (!kernels.available) return error.BuiltWithoutKernels;
@@ -30,6 +31,7 @@ pub const Ihc = struct {
             .gates_fn = try mod.function("tf_hy4_ihc_gates"),
             .gate_sig_fn = try mod.function("tf_hy4_gate_sigmoid"),
             .cast_fn = try mod.function("tf_hy4_f32_bf16"),
+            .swiglu_fn = try mod.function("tf_hy4_swiglu_limit"),
         };
     }
 
@@ -80,6 +82,20 @@ pub const Ihc = struct {
 
 
 
+
+
+    /// SwiGLU with the Hy4 clamp.
+    pub fn swigluLimit(self: *const Ihc, s: Stream, g: u64, u: u64, o: u64, n: usize, limit: f32) !void {
+        if (n == 0) return;
+        var a: Args = .{};
+        a.add(g);
+        a.add(u);
+        a.add(o);
+        a.add(@as(i64, @intCast(n)));
+        a.add(limit);
+        const per: u32 = 256;
+        try launch_.launch(self.swiglu_fn, .{ .grid = .{ .x = @intCast((n + per - 1) / per) }, .block = .{ .x = per } }, s, &a);
+    }
 
     /// Elementwise fp32 -> bf16 cast.
     pub fn castBf16(self: *const Ihc, s: Stream, x: u64, o: u64, n: usize) !void {

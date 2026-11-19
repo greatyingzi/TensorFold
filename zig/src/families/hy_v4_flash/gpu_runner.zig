@@ -36,6 +36,7 @@ pub const Runner = struct {
     streams: cuda.memory.DeviceBuffer = undefined,
     logits_dev: cuda.memory.DeviceBuffer = undefined,
     inv_freq: cuda.memory.DeviceBuffer = undefined,
+    inv_freq_swa: cuda.memory.DeviceBuffer = undefined,
     pos_dev: cuda.memory.DeviceBuffer = undefined,
     kvabf_dev: cuda.memory.DeviceBuffer = undefined,
     ol_dev: cuda.memory.DeviceBuffer = undefined,
@@ -227,7 +228,8 @@ pub const Runner = struct {
             .final = try r.ptr(rows * H * 2),
         };
         r.logits_dev = try r.buffer(rows * p.cfg.vocab * 4);
-        r.inv_freq = try r.fromHost(std.mem.sliceAsBytes(&cuda.mla.ropeFreqs(6e6)));
+        r.inv_freq = try r.fromHost(std.mem.sliceAsBytes(&cuda.mla.ropeFreqs(1e7)));
+        r.inv_freq_swa = try r.fromHost(std.mem.sliceAsBytes(&cuda.mla.ropeFreqs(1e4)));
         r.pos_dev = try r.fromHost(std.mem.asBytes(&@as(i32, 0)));
         r.kvabf_dev = try r.buffer(KW * 2);
         r.ol_dev = try r.buffer(rows * p.cfg.max_heads * p.cfg.kv_lora * 2);
@@ -353,6 +355,7 @@ pub const Runner = struct {
         var dense = self.dense orelse return error.RunnerNotReady;
         const drows = self.drows orelse return error.RunnerNotReady;
         const act = self.act orelse return error.RunnerNotReady;
+        _ = act;
         const mla = self.mla orelse return error.RunnerNotReady;
         const P = self.pdev;
         const nch = (self.pos + 1 + chunk - 1) / chunk;
@@ -380,7 +383,7 @@ pub const Runner = struct {
                 .out = P.qfull + nope * 2,
                 .o_row = heads * (nope + rope),
                 .o_head = nope + rope,
-            }, rows, heads, self.pos_dev.ptr, self.inv_freq.ptr, 1.0);
+            }, rows, heads, self.pos_dev.ptr, (if (heads > 32) self.inv_freq_swa.ptr else self.inv_freq.ptr), 1.0);
             try drows.rows(self.s, P.xbuf, H, L.kv_a_w, P.kva, cfg.kv_lora + rope, rows, cfg.kv_lora + rope, H);
             try norms.rms(self.s, P.kva, .f32, p.kv_a_norm[li], P.kvn, .bf16, rows, cfg.kv_lora, cfg.eps);
             try dense.decode(self.s, L.kv_b, P.kvn, .bf16, rows, P.kvb, .bf16);
@@ -418,7 +421,7 @@ pub const Runner = struct {
                 .out = self.kvabf_dev.ptr + cfg.kv_lora * 2,
                 .o_row = KW,
                 .o_head = rope,
-            }, 1, 1, self.pos_dev.ptr, self.inv_freq.ptr, 1.0);
+            }, 1, 1, self.pos_dev.ptr, (if (L.heads > 32) self.inv_freq_swa.ptr else self.inv_freq.ptr), 1.0);
             if (diag and li == 0) {
                 try self.s.synchronize();
                 std.debug.print("hy4 diag L0 k-rope done\n", .{});
@@ -523,7 +526,7 @@ pub const Runner = struct {
                 // Shared expert.
                 try dense.decode(self.s, L.up, P.xbuf, .bf16, rows, P.gu, .bf16);
                 try dense.decode(self.s, L.gate, P.xbuf, .bf16, rows, P.gu2, .bf16);
-                try act.swiglu(self.s, P.gu, 1536, P.gu2, 1536, P.gu_out, null, rows, 1536);
+                try ihc.swigluLimit(self.s, P.gu, P.gu2, P.gu_out, rows * 1536, cfg.swiglu_limit);
                 try dense.decode(self.s, L.down, P.gu_out, .bf16, rows, P.ffn, .bf16);
                 // combine = rmsNorm(routed + shared) with the layer's combine norm.
                 var rb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.routed_out, .len = rows * H * 2 };
@@ -555,7 +558,7 @@ pub const Runner = struct {
                 try self.drows.?.rows(self.s, P.xbuf, H, L.dense_up, self.d0_up, 13824, rows, 13824, H);
                 try ihc.castBf16(self.s, self.d0_gate, self.d0_gate_bf, rows * 13824);
                 try ihc.castBf16(self.s, self.d0_up, self.d0_up_bf, rows * 13824);
-                try act.swiglu(self.s, self.d0_gate_bf, 13824, self.d0_up_bf, 13824, self.d0_act, null, rows, 13824);
+                try ihc.swigluLimit(self.s, self.d0_gate_bf, self.d0_up_bf, self.d0_act, rows * 13824, cfg.swiglu_limit);
                 try self.drows.?.rows(self.s, self.d0_act, 13824, L.dense_down, self.d0_out, H, rows, H, 13824);
                 try ihc.castBf16(self.s, self.d0_out, self.d0_out_bf, rows * H);
                 var fbn = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.ffn, .len = rows * H * 2 };
