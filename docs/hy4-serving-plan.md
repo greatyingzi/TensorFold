@@ -30,5 +30,10 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 21 (full pack load + IHC kernels)
+- CUDA IHC kernels (collapse / stream_update / hc_head) implemented in `zig/kernels/cuda/hy4_ihc.cu`, bound in `zig/src/cuda/hy4_ihc.zig`, fatbin registered; compiles with nvcc.
+- `zig/src/families/hy_v4_flash/gpu_pack.zig` loads the whole real pack into device weights: 42 layers, 6.55 GB of EXL3 dense weights + embed/lm_head + all HC/norm/sink/gate tensors. `hy4-gpu-bench packcheck /pack` passes.
+- Real 512-expert routed layer runs in 0.062 ms/token. Full dense 42 layers run in 5.544 ms/token.
+
 ## Next implementation steps
 1. Full 42-layer dense EXL3 load/decode (batch the per-projection loader; handle kv_a). 2. Wire routed experts from `model.layers.L.mlp.experts.{gate_up,down}.E.*` into `exl3_upload.layer` + shared `exl3_experts`. 3. Assemble MLA + HC + norms + lm_head + sampling into a decode loop. 4. Backend VTable + native open + CUDA family registration. 5. Build `tensorfold-native`, `serve` the pack, run quality + throughput gates.

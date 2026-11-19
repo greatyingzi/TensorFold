@@ -312,6 +312,14 @@ pub fn exl3Real(gpu: Gpu, dir: []const u8, proj: []const u8) !void {
 }
 
 
+/// Load the whole real pack into device weights and report the totals.
+pub fn packCheck(gpu: Gpu, dir: []const u8) !void {
+    const pack = @import("hy4pack");
+    var p = try pack.load(gpu.gpa, gpu.io, gpu.d, dir);
+    defer p.deinit();
+    std.debug.print("packcheck: layers={d} dense={d} device_bytes={d} embed={d} lm_head={d}\n", .{ p.cfg.layers, p.w.len, p.up.bytes, p.embed, p.lm_head });
+}
+
 /// Time every dense EXL3 projection of one real layer from the pack.
 pub fn exl3Layer(gpu: Gpu, dir: []const u8, layer: usize, count: usize) !void {
     var arena: std.heap.ArenaAllocator = .init(gpu.gpa);

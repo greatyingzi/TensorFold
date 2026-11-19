@@ -121,6 +121,7 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     const hy4_mod = b.createModule(.{ .root_source_file = b.path("zig/tests/cuda/hy4_bench_main.zig"), .target = target, .optimize = optimize, .link_libc = true });
     hy4_mod.addImport("cuda", cuda);
     hy4_mod.addImport("core", mods.core);
+    hy4_mod.addImport("hy4pack", b.createModule(.{ .root_source_file = b.path("zig/src/families/hy_v4_flash/gpu_pack.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "cuda", .module = cuda }, .{ .name = "core", .module = mods.core } } }));
     b.step("hy4-gpu-bench", "Install hy4-gpu-bench: Hy4 Flash projections and experts on the GPU").dependOn(&b.addInstallArtifact(b.addExecutable(.{ .name = "hy4-gpu-bench", .root_module = hy4_mod }), .{}).step);
     // tf-tp-watch-check: the ranks' lines with no GPU or NCCL; a failing or dying rank stops every rank
     b.installArtifact(b.addExecutable(.{ .name = "tf-tp-watch-check", .root_module = b.createModule(.{ .root_source_file = b.path("zig/tests/cuda/tp_watch_check.zig"), .target = target, .optimize = optimize, .link_libc = true, .strip = strip, .imports = &.{.{ .name = "cuda", .module = cuda }} }) }));
