@@ -111,6 +111,8 @@ fn probe(a: std.mem.Allocator, io: std.Io, dir: []const u8, seed: usize, steps: 
         const dh = try a.alloc(f32, h);
         try dr_sum.step(s.dump_buf[0..ntarget], row, step_i, .sum_chain, dh);
         const hcos = cosine(dh, s.last_hidden);
+        const eco = cosine(row, s.last_hidden);
+        const t41 = if (ntarget > 0) cosine(s.dump_buf[ntarget - 1], s.last_hidden) else 0;
         const lsum: []f32 = logits_buf[0..c.vocab];
         try headVec(lsum, &bag, dh, c.vocab, h, c.eps);
         var asum: usize = 0;
@@ -129,7 +131,7 @@ fn probe(a: std.mem.Allocator, io: std.Io, dir: []const u8, seed: usize, steps: 
         const top_main = try topIndices(a, logits, 10);
         const top_sum = try topIndices(a, lsum, 10);
         const top_tgt = try topIndices(a, ltgt, 10);
-        if (step_i % 5 == 0 or step_i == steps - 1) std.debug.print("PROBE step {d}: main {d} sum {d} tgt {d} top10 sum {d}/10 tgt {d}/10 hcos {d:.4}\n", .{ step_i, best, asum, atgt, topOverlap(top_main, top_sum), topOverlap(top_main, top_tgt), hcos });
+        if (step_i % 5 == 0 or step_i == steps - 1) std.debug.print("PROBE step {d}: main {d} sum {d} tgt {d} top10 sum {d}/10 tgt {d}/10 hcos {d:.4} emb {d:.4} t41 {d:.4}\n", .{ step_i, best, asum, atgt, topOverlap(top_main, top_sum), topOverlap(top_main, top_tgt), hcos, eco, t41 });
         tok = best;
     }
     const ns = nowNs() - t0;
@@ -167,17 +169,17 @@ fn specDecode(a: std.mem.Allocator, io: std.Io, dir: []const u8, token: usize, c
     defer dr.deinit();
     const drafts = try a.alloc(u32, 1);
     var tok: usize = token % c.vocab;
+    var logits: []const f32 = try s.step(tok);
     var accepted: usize = 0;
     const t0 = nowNs();
     for (0..count) |step_i| {
-        const logits = try s.step(tok);
         const next = try spec.pick(logits);
         try @import("src/families/hy_v4_flash/draft.zig").proposeDfly(a, &c, &bag, &s, &dr, tok, drafts);
-        const n = try @import("src/families/hy_v4_flash/draft.zig").verify(&s, logits, drafts);
-        if (n > 0) accepted += 1;
+        const hit: usize = if (drafts[0] == next) 1 else 0;
+        accepted += hit;
         tok = next;
-        if (n == 0) _ = try s.step(tok);
-        if (step_i % 5 == 0 or step_i == count - 1) std.debug.print("SPEC step {d}: draft {d} target {d} accepted {d}\n", .{ step_i, drafts[0], next, n });
+        logits = try s.step(tok);
+        if (step_i % 5 == 0 or step_i == count - 1) std.debug.print("SPEC step {d}: draft {d} target {d} accepted {d}\n", .{ step_i, drafts[0], next, hit });
     }
     const ns = nowNs() - t0;
     std.debug.print("SPEC RESULT tokens {d} accepted {d} ({d}%) ns {d} tok_per_s {d}\n", .{ count, accepted, if (count > 0) accepted * 100 / count else 0, ns, if (ns > 0) @divTrunc(@as(i64, @intCast(count)) * @as(i64, std.time.ns_per_s), ns) else 0 });
