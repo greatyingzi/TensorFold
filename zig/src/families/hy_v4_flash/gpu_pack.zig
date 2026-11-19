@@ -9,6 +9,7 @@ pub const Config = struct {
     hc: usize = 4,
     heads: usize = 32,
     kv_lora: usize = 512,
+    q_lora: usize = 1024,
     nope: usize = 192,
     rope: usize = 64,
     vdim: usize = 256,
@@ -29,6 +30,7 @@ pub const LayerWeights = struct {
     q_a: Linear = undefined,
     q_b: Linear = undefined,
     kv_a: Linear = undefined,
+    kv_a_w: u64 = 0, // BF16 original for the n=576 projection (EXL3 needs n % 128 == 0)
     kv_b: Linear = undefined,
     o: Linear = undefined,
     up: Linear = undefined,
@@ -43,7 +45,9 @@ pub const Pack = struct {
     cfg: Config,
     w: [42]LayerWeights = @splat(.{}),
     embed: u64 = 0,
+    embed_host: []const u8 = &.{},
     lm_head: u64 = 0,
+    lm_head_w: u64 = 0, // BF16 original; vocab 120000 is not 128-aligned
     final_norm: u64 = 0,
     // HC projections: 2*hc rows of hc*hidden each, per layer; and head.
     attn_fn: [42]u64 = @splat(0),
@@ -83,6 +87,60 @@ fn getTensor(a: std.mem.Allocator, io: std.Io, files: *std.StringHashMap(*sf.Fil
     return file.get(name) orelse error.MissingPackTensor;
 }
 
+
+/// One layer's 512 fused gate/up + down experts, uploaded as pointer tables and stacked scales.
+fn loadExperts(a: std.mem.Allocator, io: std.Io, p: *Pack, files: *std.StringHashMap(*sf.File), wm: std.json.ObjectMap, dir: []const u8, li: usize) !cuda.exl3_experts.Layer {
+    const E: usize = 512;
+    const dims: usize = 1536;
+    const width: usize = 1536;
+    var gt = try a.alloc(u64, E);
+    var dt = try a.alloc(u64, E);
+    const gu_suh = try a.alloc(u8, E * dims * 2);
+    const gu_svh = try a.alloc(u8, E * 2 * width * 2);
+    const d_suh = try a.alloc(u8, E * width * 2);
+    const d_svh = try a.alloc(u8, E * dims * 2);
+    for (0..E) |e| {
+        const names = [_][]const u8{
+            try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.gate_up.{d}.trellis", .{ li, e }),
+            try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.gate_up.{d}.suh", .{ li, e }),
+            try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.gate_up.{d}.svh", .{ li, e }),
+            try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.down.{d}.trellis", .{ li, e }),
+            try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.down.{d}.suh", .{ li, e }),
+            try std.fmt.allocPrint(a, "model.layers.{d}.mlp.experts.down.{d}.svh", .{ li, e }),
+        };
+        var t: [6]sf.Tensor = undefined;
+        for (names, 0..) |nm, ni| t[ni] = try getTensor(a, io, files, wm, dir, nm);
+        gt[e] = try p.up.dev(t[0].bytes);
+        dt[e] = try p.up.dev(t[3].bytes);
+        @memcpy(gu_suh[e * dims * 2 ..][0 .. dims * 2], t[1].bytes);
+        @memcpy(gu_svh[e * 2 * width * 2 ..][0 .. 2 * width * 2], t[2].bytes);
+        @memcpy(d_suh[e * width * 2 ..][0 .. width * 2], t[4].bytes);
+        @memcpy(d_svh[e * dims * 2 ..][0 .. dims * 2], t[5].bytes);
+    }
+    const k2 = try a.alloc(i32, E);
+    @memset(k2, 6);
+    return .{
+        .gate = try p.up.dev(std.mem.sliceAsBytes(gt)),
+        .up = try p.up.dev(std.mem.sliceAsBytes(gt)),
+        .down = try p.up.dev(std.mem.sliceAsBytes(dt)),
+        .gate_k2 = try p.up.dev(std.mem.sliceAsBytes(k2)),
+        .up_k2 = try p.up.dev(std.mem.sliceAsBytes(k2)),
+        .down_k2 = try p.up.dev(std.mem.sliceAsBytes(k2)),
+        .suh_g = try p.up.dev(gu_suh),
+        .suh_u = try p.up.dev(gu_suh),
+        .svh_g = try p.up.dev(gu_svh),
+        .svh_u = try p.up.dev(gu_svh),
+        .suh_d = try p.up.dev(d_suh),
+        .svh_d = try p.up.dev(d_svh),
+        .experts = E,
+        .dims = dims,
+        .width = width,
+        .codebook = .mul1,
+        .uniform_k2 = 6,
+        .gu_stride = width / 16,
+    };
+}
+
 fn dense(a: std.mem.Allocator, io: std.Io, p: *Pack, files: *std.StringHashMap(*sf.File), wm: std.json.ObjectMap, dir: []const u8, name: []const u8, k: usize, n: usize) !Linear {
     const t = try getTensor(a, io, files, wm, dir, try std.fmt.allocPrint(a, "{s}.trellis", .{name}));
     const su = try getTensor(a, io, files, wm, dir, try std.fmt.allocPrint(a, "{s}.suh", .{name}));
@@ -110,10 +168,12 @@ pub fn load(a: std.mem.Allocator, io: std.Io, d: *const cuda.Driver, dir: []cons
     var doc = try std.json.parseFromSlice(std.json.Value, a, idx_text, .{});
     const wm = doc.value.object.get("weight_map").?.object;
     var files = std.StringHashMap(*sf.File).init(a);
-    var p: Pack = .{ .a = a, .up = .{ .d = d, .gpa = a, .max_buffers = 20000 }, .cfg = .{} };
+    var p: Pack = .{ .a = a, .up = .{ .d = d, .gpa = a, .max_buffers = 200000 }, .cfg = .{} };
     errdefer p.deinit();
-    p.embed = try scalar(a, io, &p, &files, wm, dir, "model.embed_tokens.weight");
+    p.embed_host = (try getTensor(a, io, &files, wm, dir, "model.embed_tokens.weight")).bytes;
+    p.embed = try p.up.dev(p.embed_host);
     p.lm_head = try scalar(a, io, &p, &files, wm, dir, "lm_head.weight");
+    p.lm_head_w = p.lm_head;
     p.final_norm = try scalar(a, io, &p, &files, wm, dir, "model.norm.weight");
     p.head_fn = try scalar(a, io, &p, &files, wm, dir, "model.hc_head.hc_head_fn");
     p.head_base = try scalar(a, io, &p, &files, wm, dir, "model.hc_head.hc_head_base");
@@ -123,10 +183,11 @@ pub fn load(a: std.mem.Allocator, io: std.Io, d: *const cuda.Driver, dir: []cons
         const L = &p.w[li];
         L.q_a = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.q_a_proj", .{pre}), 3072, 1024);
         L.q_b = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.q_b_proj", .{pre}), 1024, 8192);
-        L.kv_a = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.kv_a_proj_with_mqa", .{pre}), 3072, 576);
+        L.kv_a_w = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.kv_a_proj_with_mqa.weight", .{pre}));
         L.kv_b = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.kv_b_proj", .{pre}), 512, 14336);
         L.o = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.o_proj", .{pre}), 8192, 3072);
         if (li > 0) {
+            L.experts = try loadExperts(a, io, &p, &files, wm, dir, li);
             L.up = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}mlp.shared_experts.up_proj", .{pre}), 3072, 1536);
             L.gate = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}mlp.shared_experts.gate_proj", .{pre}), 3072, 1536);
             L.down = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}mlp.shared_experts.down_proj", .{pre}), 1536, 3072);
