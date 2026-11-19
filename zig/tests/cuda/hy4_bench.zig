@@ -182,8 +182,7 @@ fn bfOfHost(bits: u16) f32 {
 }
 
 
-/// The real Q4 pack through the full GPU step: load every layer's affine4 tensors,
-/// pack them into the tiled layout, run the assembled forward and argmax.
+/// The real pack through the full GPU step: load, pack, run the assembled forward.
 pub fn realForward(gpu: Gpu, dir: []const u8) !void {
     var arena: std.heap.ArenaAllocator = .init(gpu.gpa);
     defer arena.deinit();

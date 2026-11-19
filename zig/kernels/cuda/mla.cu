@@ -67,7 +67,7 @@ extern "C" __global__ void __launch_bounds__(128)
   tf_mla::expand_v<256>(ol, wv, out, rows, heads, rb);
 }
 
-// merge_part with Hy4's learned sink: the sink is an extra softmax column that carries no value, so it enters only the denominator: l += expf(sink - m).
+// merge_part with Hy4's learned sink: denominator-only (l += expf(sink - m)).
 extern "C" __global__ void __launch_bounds__(128)
     tf_mla_merge_part_sink(const float* po, const float* pm, const float* pl, float* qo, float* qm,
                            float* ql, int64_t rows, int64_t heads, int nch, const float* sinks) {

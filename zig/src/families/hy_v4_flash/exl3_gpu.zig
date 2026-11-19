@@ -1,4 +1,4 @@
-// ! Hy4 Flash EXL3 pack on the GPU: the raw trellis/suh/svh layout of the 3bpw pack. ! Names follow the converter's Linear keys; the kernels are the shared exl3_linear and ! exl3_experts modules (the GLM production path). This module maps Hy4's latent-MoE ! geometry onto them.
+//! Hy4 Flash EXL3 pack layout on the GPU: trellis/suh/svh over the shared kernels.
 const std = @import("std");
 
 /// One quantized projection's raw EXL3 tensors, as safetensors bytes.
