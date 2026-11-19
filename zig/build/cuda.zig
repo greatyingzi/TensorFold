@@ -121,12 +121,15 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     const hy4_mod = b.createModule(.{ .root_source_file = b.path("zig/tests/cuda/hy4_bench_main.zig"), .target = target, .optimize = optimize, .link_libc = true });
     hy4_mod.addImport("cuda", cuda);
     hy4_mod.addImport("core", mods.core);
-    hy4_mod.addImport("hy4pack", b.createModule(.{ .root_source_file = b.path("zig/src/families/hy_v4_flash/gpu_pack.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "cuda", .module = cuda }, .{ .name = "core", .module = mods.core } } }));
+    const hy4_pack_mod = b.createModule(.{ .root_source_file = b.path("zig/src/families/hy_v4_flash/gpu_pack.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "cuda", .module = cuda }, .{ .name = "core", .module = mods.core } } });
+    const hy4_runner_mod = b.createModule(.{ .root_source_file = b.path("zig/src/families/hy_v4_flash/gpu_runner.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "cuda", .module = cuda }, .{ .name = "hy4pack", .module = hy4_pack_mod } } });
+    hy4_mod.addImport("hy4pack", hy4_pack_mod);
     b.step("hy4-gpu-bench", "Install hy4-gpu-bench: Hy4 Flash projections and experts on the GPU").dependOn(&b.addInstallArtifact(b.addExecutable(.{ .name = "hy4-gpu-bench", .root_module = hy4_mod }), .{}).step);
     const step_mod = b.createModule(.{ .root_source_file = b.path("zig/tests/cuda/hy4_gpu_step.zig"), .target = target, .optimize = optimize, .link_libc = true });
     step_mod.addImport("cuda", cuda);
     step_mod.addImport("core", mods.core);
-    step_mod.addImport("hy4pack", b.createModule(.{ .root_source_file = b.path("zig/src/families/hy_v4_flash/gpu_pack.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "cuda", .module = cuda }, .{ .name = "core", .module = mods.core } } }));
+    step_mod.addImport("hy4pack", hy4_pack_mod);
+    step_mod.addImport("hy4runner", hy4_runner_mod);
     b.step("hy4-gpu-step", "One real-weight Hy4 Flash decode step on the GPU").dependOn(&b.addInstallArtifact(b.addExecutable(.{ .name = "hy4-gpu-step", .root_module = step_mod }), .{}).step);
     // tf-tp-watch-check: the ranks' lines with no GPU or NCCL; a failing or dying rank stops every rank
     b.installArtifact(b.addExecutable(.{ .name = "tf-tp-watch-check", .root_module = b.createModule(.{ .root_source_file = b.path("zig/tests/cuda/tp_watch_check.zig"), .target = target, .optimize = optimize, .link_libc = true, .strip = strip, .imports = &.{.{ .name = "cuda", .module = cuda }} }) }));

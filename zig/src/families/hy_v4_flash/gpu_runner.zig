@@ -183,7 +183,7 @@ pub const Runner = struct {
         r.gate_logits = try r.ptr(rows * p.cfg.max_heads * p.cfg.vdim * 4);
         r.router_logits = try r.ptr(rows * 512 * 4);
         r.pick_dev = try r.ptr(rows * p.cfg.topk * 4);
-        r.wts_dev = try r.ptr(rows * p.cfg.topk * 2);
+        r.wts_dev = try r.ptr(rows * p.cfg.topk * 4);
         r.latent_in = try r.ptr(rows * 1536 * 2);
         r.expert_out = try r.ptr(rows * 1536 * 4);
         r.routed_out = try r.ptr(rows * H * 2);
@@ -366,6 +366,15 @@ pub const Runner = struct {
             const heads = L.heads; // 32 on DSA layers, 64 on sliding
             _ = heads_max;
             try ihc.collapse(self.s, self.streams.ptr, p.attn_fn[li], p.attn_base[li], p.attn_scale[li], P.mixed, rows, H, HC, cfg.hc_eps, cfg.hc_magnitude, false);
+            if (self.pos == 0 and li < 3) {
+                const mh = try self.a.alloc(u16, 8);
+                defer self.a.free(mh);
+                var mb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.mixed, .len = 16 };
+                try mb.download(0, std.mem.sliceAsBytes(mh));
+                std.debug.print("GPUDUMP L{d} mixed", .{li});
+                for (mh) |v| std.debug.print(" {d}", .{@as(f32, @bitCast(@as(u32, v) << 16))});
+                std.debug.print("\n", .{});
+            }
             try norms.rms(self.s, P.mixed, .bf16, p.input_norm[li], P.xbuf, .bf16, rows, H, cfg.eps);
             try dense.decode(self.s, L.q_a, P.xbuf, .bf16, rows, P.qn, .bf16);
             try norms.rms(self.s, P.qn, .bf16, p.q_a_norm[li], P.qn, .bf16, rows, cfg.q_lora, cfg.eps);
@@ -511,18 +520,28 @@ pub const Runner = struct {
                 try self.hostRoute();
                 var pick_buf = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.pick_dev, .len = rows * p.cfg.topk * 4 };
                 try pick_buf.upload(0, std.mem.sliceAsBytes(self.host_pick));
-                const wts16 = try self.a.alloc(u16, p.cfg.topk);
-                defer self.a.free(wts16);
-                for (self.host_wts, 0..) |v, i| wts16[i] = @bitCast(@as(f16, @floatCast(v)));
-                var wts_buf = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.wts_dev, .len = rows * p.cfg.topk * 2 };
-                try wts_buf.upload(0, std.mem.sliceAsBytes(wts16));
+                // the expert kernel reads fp32 routing weights ([rows, slots])
+                var wts_buf = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.wts_dev, .len = rows * p.cfg.topk * 4 };
+                try wts_buf.upload(0, std.mem.sliceAsBytes(self.host_wts));
                 // Routed: latent_down -> experts -> latent_up.
                 try dense.decode(self.s, L.routed_down, P.xbuf, .bf16, rows, self.latent_in, .bf16);
                 const ex = self.ex orelse return error.RunnerNotReady;
                 const el = L.experts orelse return error.RunnerNotReady;
+                var scb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.expert_scratch, .len = self.expert_scratch_len };
+                try scb.fill8(0, self.s.handle); // group()'s counters must start zero every call
                 const sc = try cuda.exl3_experts.scratch(self.expert_scratch, el, rows, p.cfg.topk);
                 try ex.run(self.s, el, self.latent_in, 1536, .bf16, self.pick_dev, self.wts_dev, rows, self.expert_out, sc);
                 try dense.decode(self.s, L.routed_up, self.expert_out, .f32, rows, self.routed_out, .bf16);
+                if (self.pos == 0 and li == 1) {
+                    const eo = try self.a.alloc(f32, 4);
+                    defer self.a.free(eo);
+                    var eb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.expert_out, .len = 16 };
+                    try eb.download(0, std.mem.sliceAsBytes(eo));
+                    std.debug.print("GPUDUMP L1 expert_out {d:.4} {d:.4} picks", .{ eo[0], eo[1] });
+                    for (self.host_pick[0..4]) |pk| std.debug.print(" {d}", .{pk});
+                    for (self.host_wts[0..4]) |w| std.debug.print(" w={d:.3}", .{w});
+                    std.debug.print("\n", .{});
+                }
                 // Shared expert.
                 try dense.decode(self.s, L.up, P.xbuf, .bf16, rows, P.gu, .bf16);
                 try dense.decode(self.s, L.gate, P.xbuf, .bf16, rows, P.gu2, .bf16);

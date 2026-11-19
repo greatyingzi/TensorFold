@@ -30,6 +30,12 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 32 (CLI unified onto Runner; expert-weight dtype fixed)
+- The GPU CLI now runs the serve's exact math (Runner module), making it the fast A/B testbed: builds in ~1 min instead of the native server's 6–8.
+- Real bug found and fixed: the expert kernel reads routing weights as **fp32** (`const float* wts` in exl3_experts.cu:196); we uploaded fp16, so the weighted sum read garbage/zeros — expert_out was exactly -0.0000. After the fix expert_out is nonzero and the token changed 4459 → 12653.
+- Remaining: expert_out is still ~1000x too small (-0.0006 vs expected O(0.1)). Next split: dump latent_in (routed_down decode output) — if ~0, the bug is in routed_down; if normal, it is inside the expert kernel path (fused gate_up pointer aliasing with gu_stride=96, suh/svh stacking, or the act epilogue).
+- Also ruled out: expert scratch counters were not the issue (explicit zeroing changed nothing).
+
 ## Progress round 31 (A/B localizes the divergence)
 - CPU dumpref mode (real weights, full 42-layer dump): **NEXT=68** for token 0 — the earlier NEXT=7 came from the smoke path's synthetic vocab and is void.
 - Per-layer mixed dump comparison: **L0 exact match** (bf16 rounding), **L1 ~3% drift** (quantization noise scale), **L2 structural divergence**: CPU mixed jumps 20x over L1 (0.22/-0.23/0.70) while GPU stays at L1's scale (0.014). L2's input is L1's FFN output and L1 is the first routed-MoE layer — the GPU's routed-expert contribution is effectively zero while the CPU's is strong (routed_scale=3.998).
