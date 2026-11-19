@@ -33,7 +33,8 @@
 ## Progress round 25 (SERVICE RUNNING)
 - `tensorfold-native serve /pack --name hy4flash --parallel 1 --context 2048 --port 8080` **starts successfully on DGX00** with the real 3bpw GPU decode path: `hy_v4_flash: 3bpw GPU decode active, 611360 bytes of scratch and 1 stream`; model 59.29 GiB; loaded in 97.4 s; `/v1/models` and `/v1/completions` respond.
 - Measured serving throughput: 33.4 tok/s, TTFT 0.044 s, 8 tokens in 0.209 s (greedy).
-- `/v1/chat/completions` is refused by the checkpoint's chat template (`str.format() is not supported`) — raw `/v1/completions` works.
+- `/v1/chat/completions` was refused by the checkpoint's chat template (`str.format()` unsupported by the server's Jinja subset). Passing `--chat-template /chat/hy4_chat.jinja` with a minimal loop template fixes it; both `/v1/completions` and `/v1/chat/completions` now return 200 with 33.5 tok/s.
+- Running service container on DGX00: `hy4serve8` (host network, port 8080), model name `hy4flash`.
 - Generated text is still incoherent: the GPU step's attention is zeroed (valid only for the first token) and routed MoE experts are not yet called. Quality gate NOT passed.
 - Registration hook that made admission fit: `native.zig textWeightBytes` returns 70 GiB (compressed budget) instead of the generic 464 GiB; GPU path loads only `gpu_pack` (59.29 GiB) and skips the host Bag.
 
