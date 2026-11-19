@@ -37,15 +37,8 @@ pub fn proposeDfly(gpa: std.mem.Allocator, c: *const @import("config.zig").Confi
     // s.pos already advanced past the token whose dumps we are drafting from.
     const draft_pos = if (s.pos > 0) s.pos - 1 else 0;
     try dr.step(targets, embed, draft_pos, .sum_chain, hidden);
-    // The draft head shares the target lm_head, which was trained on final-normed hiddens.
-    // The target path applies ihc.head + rmsNorm(norm.weight) before lm_head; the draft is
-    // already single-stream, so only the final norm applies here.
-    const nw = bag.get("norm.weight") orelse return error.MissingHy4Tensor;
-    const nweight = switch (nw.value) {
-        .f32s => |v| v,
-        else => return error.ExpectedF32Tensor,
-    };
-    try ops.rmsNorm(hidden, hidden, nweight, c.eps);
+    // dfly.step applies the draft's own final_norm; the shared lm_head takes that directly.
+    _ = ops;
     const logits = try a.alloc(f32, c.vocab);
     try headMatvec(logits, bag, hidden, c.vocab, h);
     const best = try propose(gpa, logits, out.len);

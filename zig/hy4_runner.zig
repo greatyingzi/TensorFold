@@ -137,12 +137,7 @@ fn probe(a: std.mem.Allocator, io: std.Io, dir: []const u8, seed: usize, steps: 
 }
 
 fn headVec(y: []f32, bag: *const @import("src/families/hy_v4_flash/weights.zig").Bag, x: []f32, rows: usize, cols: usize, eps: f32) !void {
-    const nw = bag.get("norm.weight") orelse return error.MissingHy4Tensor;
-    const nweight = switch (nw.value) {
-        .f32s => |v| v,
-        else => return error.ExpectedF32Tensor,
-    };
-    try ops.rmsNorm(x, x, nweight, eps);
+    _ = eps;
     const t = bag.get("lm_head.weight") orelse return error.MissingHy4Tensor;
     switch (t.value) {
         .f32s => |v| try ops.matvec(y, v, x, rows, cols),

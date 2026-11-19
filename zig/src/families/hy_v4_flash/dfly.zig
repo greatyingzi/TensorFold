@@ -15,6 +15,15 @@ fn f32s(bag: *const weights.Bag, name: []const u8) ![]const f32 {
     };
 }
 
+/// Optional norm/gate vector: absent in the synthetic fixture, present in the real checkpoint.
+fn maybeF32(bag: *const weights.Bag, name: []const u8) !?[]const f32 {
+    const t = bag.get(name) orelse return null;
+    return switch (t.value) {
+        .f32s => |v| v,
+        else => error.ExpectedF32Tensor,
+    };
+}
+
 fn matvecW(y: []f32, bag: *const weights.Bag, name: []const u8, x: []const f32, rows: usize, cols: usize) !void {
     const t = bag.get(name) orelse return error.MissingHy4Tensor;
     switch (t.value) {
@@ -95,8 +104,32 @@ pub const Drafter = struct {
         const inter = 3 * c.hidden;
         if (out.len != h or embed_tok.len != h or h_targets.len != 0 and h_targets[0].len != h) return error.BadDraftShape;
 
+        // The real checkpoint conditions the token embedding on the target hidden before
+        // the draft layers (dfly_enable_hidden_correction). The synthetic fixture has no
+        // correction tensors, so this is a no-op there.
+        var base_embed: []const f32 = embed_tok;
+        if (h_targets.len > 0 and self.bag.get("dfly_layers.hidden_correction.gate_proj.weight") != null) {
+            const ec = try a.alloc(f32, h);
+            const hc = try a.alloc(f32, h);
+            const cat = try a.alloc(f32, 2 * h);
+            try ops.rmsNorm(ec, embed_tok, (try maybeF32(self.bag, "dfly_layers.hidden_correction.embed_norm.weight")) orelse return error.MissingHy4Tensor, c.eps);
+            try ops.rmsNorm(hc, h_targets[0], (try maybeF32(self.bag, "dfly_layers.hidden_correction.hidden_norm.weight")) orelse return error.MissingHy4Tensor, c.eps);
+            @memcpy(cat[0..h], ec);
+            @memcpy(cat[h..], hc);
+            const g = try a.alloc(f32, h);
+            const u = try a.alloc(f32, h);
+            try matvecW(g, self.bag, "dfly_layers.hidden_correction.gate_proj.weight", cat, h, 2 * h);
+            try matvecW(u, self.bag, "dfly_layers.hidden_correction.up_proj.weight", cat, h, 2 * h);
+            for (g, u) |*gg, *uu| gg.* = gg.* * ops.sigmoid(gg.*) * uu.*;
+            const corr = try a.alloc(f32, h);
+            try matvecW(corr, self.bag, "dfly_layers.hidden_correction.down_proj.weight", g, h, h);
+            const conditioned = try a.alloc(f32, h);
+            for (0..h) |i| conditioned[i] = embed_tok[i] + corr[i];
+            base_embed = conditioned;
+        }
+
         var stream = try a.alloc(f32, h);
-        @memcpy(stream, embed_tok);
+        @memcpy(stream, base_embed);
 
         const tmp = try a.alloc(f32, h);
         const fused = try a.alloc(f32, h);
@@ -204,7 +237,32 @@ pub const Drafter = struct {
             try matvecW(tmp, self.bag, try self.nm(a, li, "mlp.down_proj.weight"), gu, h, inter);
             for (0..h) |i| stream[i] += tmp[i];
         }
-        @memcpy(out, stream);
+        // mtp_fusion blends the conditioned embedding with the drafted stream, then the
+        // draft's own final_norm (not the target model's) feeds the shared lm_head.
+        var final_vec: []const f32 = stream;
+        if (self.bag.get("dfly_layers.mtp_fusion.eh_proj.weight") != null) {
+            const enorm = (try maybeF32(self.bag, "dfly_layers.mtp_fusion.enorm.weight")) orelse return error.MissingHy4Tensor;
+            const hnorm = (try maybeF32(self.bag, "dfly_layers.mtp_fusion.hnorm.weight")) orelse return error.MissingHy4Tensor;
+            const fuse_gate = (try maybeF32(self.bag, "dfly_layers.mtp_fusion.gate")) orelse return error.MissingHy4Tensor;
+            const e = try a.alloc(f32, h);
+            const hv = try a.alloc(f32, h);
+            const cat2 = try a.alloc(f32, 2 * h);
+            try ops.rmsNorm(e, base_embed, enorm, c.eps);
+            try ops.rmsNorm(hv, stream, hnorm, c.eps);
+            @memcpy(cat2[0..h], e);
+            @memcpy(cat2[h..], hv);
+            const proj = try a.alloc(f32, h);
+            try matvecW(proj, self.bag, "dfly_layers.mtp_fusion.eh_proj.weight", cat2, h, 2 * h);
+            const mixed = try a.alloc(f32, h);
+            for (0..h) |i| mixed[i] = fuse_gate[i] * proj[i] + (1.0 - fuse_gate[i]) * hv[i];
+            final_vec = mixed;
+        }
+        if (try maybeF32(self.bag, "dfly_layers.final_norm.weight")) |fnw| {
+            const normed = try a.alloc(f32, h);
+            try ops.rmsNorm(normed, final_vec, fnw, c.eps);
+            final_vec = normed;
+        }
+        @memcpy(out, final_vec);
         self.len += 1;
     }
 };
