@@ -8,6 +8,7 @@ pub const Config = struct {
     layers: usize = 42,
     hc: usize = 4,
     heads: usize = 32,
+    max_heads: usize = 64, // sliding layers' 64; attention buffers take the max
     kv_lora: usize = 512,
     q_lora: usize = 1024,
     nope: usize = 192,
@@ -30,6 +31,7 @@ pub const LayerWeights = struct {
     q_a: Linear = undefined,
     q_b: Linear = undefined,
     kv_a: Linear = undefined,
+    heads: usize = 32, // this layer's attention head count (64 on sliding layers)
     kv_a_w: u64 = 0, // BF16 original for the n=576 projection (EXL3 needs n % 128 == 0)
     kv_b_w: u64 = 0, // BF16 original kv_b weight, used to rebuild absorb/expand matrices
     kv_b: Linear = undefined,
@@ -143,12 +145,16 @@ fn loadExperts(a: std.mem.Allocator, io: std.Io, p: *Pack, files: *std.StringHas
     };
 }
 
-fn dense(a: std.mem.Allocator, io: std.Io, p: *Pack, files: *std.StringHashMap(*sf.File), wm: std.json.ObjectMap, dir: []const u8, name: []const u8, k: usize, n: usize) !Linear {
+fn dense(a: std.mem.Allocator, io: std.Io, p: *Pack, files: *std.StringHashMap(*sf.File), wm: std.json.ObjectMap, dir: []const u8, name: []const u8) !Linear {
     const t = try getTensor(a, io, files, wm, dir, try std.fmt.allocPrint(a, "{s}.trellis", .{name}));
     const su = try getTensor(a, io, files, wm, dir, try std.fmt.allocPrint(a, "{s}.suh", .{name}));
     const sv = try getTensor(a, io, files, wm, dir, try std.fmt.allocPrint(a, "{s}.svh", .{name}));
     const cb: cuda.exl3.Codebook = if (wm.contains(try std.fmt.allocPrint(a, "{s}.mcg", .{name}))) .mcg else .mul1;
     const halves: u32 = @intCast(t.shape[2] / 8);
+    // The trellis carries the true geometry: [k/16, n/16, words]. Sliding-window
+    // layers have 64 heads, DSA layers 32, so n differs per layer.
+    const n: usize = t.shape[1] * 16;
+    const k: usize = su.numel();
     const st = cuda.exl3.strides(k, n, halves, false);
     return .{
         .trellis = try p.up.dev(t.bytes),
@@ -205,18 +211,20 @@ pub fn load(a: std.mem.Allocator, io: std.Io, d: *const cuda.Driver, dir: []cons
     for (0..p.cfg.layers) |li| {
         const pre = try std.fmt.allocPrint(a, "model.layers.{d}.", .{li});
         const L = &p.w[li];
-        L.q_a = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.q_a_proj", .{pre}), 3072, 1024);
-        L.q_b = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.q_b_proj", .{pre}), 1024, 8192);
+        L.q_a = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.q_a_proj", .{pre}));
+        L.q_b = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.q_b_proj", .{pre}));
+        L.heads = L.q_b.n / @as(u32, @intCast(p.cfg.nope + p.cfg.rope));
+        L.heads = L.q_b.n / @as(u32, @intCast(p.cfg.nope + p.cfg.rope));
         L.kv_a_w = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.kv_a_proj_with_mqa.weight", .{pre}));
         L.kv_b_w = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.kv_b_proj.weight", .{pre}));
         L.attn_gate_w = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.linear_gate.weight", .{pre}));
-        L.kv_b = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.kv_b_proj", .{pre}), 512, 14336);
-        L.o = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.o_proj", .{pre}), 8192, 3072);
+        L.kv_b = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.kv_b_proj", .{pre}));
+        L.o = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.o_proj", .{pre}));
         if (li > 0) {
             L.experts = try loadExperts(a, io, &p, &files, wm, dir, li);
-            L.up = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}mlp.shared_experts.up_proj", .{pre}), 3072, 1536);
-            L.gate = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}mlp.shared_experts.gate_proj", .{pre}), 3072, 1536);
-            L.down = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}mlp.shared_experts.down_proj", .{pre}), 1536, 3072);
+            L.up = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}mlp.shared_experts.up_proj", .{pre}));
+            L.gate = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}mlp.shared_experts.gate_proj", .{pre}));
+            L.down = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}mlp.shared_experts.down_proj", .{pre}));
         }
         p.attn_fn[li] = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}hc_attn_layer.hc_pre.hc_fn", .{pre}));
         p.attn_base[li] = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}hc_attn_layer.hc_pre.hc_base", .{pre}));

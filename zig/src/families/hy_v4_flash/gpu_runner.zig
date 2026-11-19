@@ -98,19 +98,22 @@ pub const Runner = struct {
         const nope = cfg.nope;
         const vdim = cfg.vdim;
         const per = nope + vdim;
-        const kv_out = cfg.heads * per;
-        const host_full = try r.a.alloc(u16, k * kv_out);
+        const kv_out_max = cfg.max_heads * per;
+        const host_full = try r.a.alloc(u16, k * kv_out_max);
         defer r.a.free(host_full);
-        const wk_host = try r.a.alloc(u16, cfg.heads * nope * k);
+        const wk_host = try r.a.alloc(u16, cfg.max_heads * nope * k);
         defer r.a.free(wk_host);
-        const wv_host = try r.a.alloc(u16, cfg.heads * vdim * k);
+        const wv_host = try r.a.alloc(u16, cfg.max_heads * vdim * k);
         defer r.a.free(wv_host);
         for (0..cfg.layers) |li| {
             if (li % 8 == 0) std.debug.print("hy4 runner init: absorb layer {d}\n", .{li});
+            const hd = r.p.w[li].heads;
+            const kv_out = hd * per;
             var src = cuda.memory.DeviceBuffer{ .d = r.d, .ptr = r.p.w[li].kv_b_w, .len = k * kv_out * 2 };
-            try src.download(0, std.mem.sliceAsBytes(host_full));
+            // the source is this layer's kv_out rows; host_full is sized for the max.
+            try src.download(0, std.mem.sliceAsBytes(host_full)[0 .. k * kv_out * 2]);
             // kv_b.weight is row-major [kv_out, k]: element (o, c) sits at o*k + c.
-            for (0..cfg.heads) |h| {
+            for (0..hd) |h| {
                 for (0..nope) |i| {
                     const o = h * per + i;
                     for (0..k) |c| wk_host[(h * nope + i) * k + c] = host_full[o * k + c];
@@ -120,8 +123,12 @@ pub const Runner = struct {
                     for (0..k) |c| wv_host[(h * vdim + i) * k + c] = host_full[o * k + c];
                 }
             }
-            r.wk[li] = (try r.fromHost(std.mem.sliceAsBytes(wk_host))).ptr;
-            r.wv[li] = (try r.fromHost(std.mem.sliceAsBytes(wv_host))).ptr;
+            const wk_l = try r.a.alloc(u16, hd * nope * k);
+            const wv_l = try r.a.alloc(u16, hd * vdim * k);
+            @memcpy(wk_l, wk_host[0..hd * nope * k]);
+            @memcpy(wv_l, wv_host[0..hd * vdim * k]);
+            r.wk[li] = (try r.fromHost(std.mem.sliceAsBytes(wk_l))).ptr;
+            r.wv[li] = (try r.fromHost(std.mem.sliceAsBytes(wv_l))).ptr;
         }
         try r.s.synchronize();
         std.debug.print("hy4 runner init: absorb weights ready ({d} layers)\n", .{cfg.layers});
@@ -225,7 +232,15 @@ pub const Runner = struct {
         if (self.act) |*k| k.unload();
         if (self.mla) |*k| k.unload();
         for (self.bufs[0..self.nbuf]) |*b| b.free();
-        for ([_][]u8{ std.mem.sliceAsBytes(self.host_streams), std.mem.sliceAsBytes(self.host_logits), std.mem.sliceAsBytes(self.host_kva_f32), std.mem.sliceAsBytes(self.host_kva_bf), std.mem.sliceAsBytes(self.host_ol_f32), std.mem.sliceAsBytes(self.host_ol_bf), std.mem.sliceAsBytes(self.host_l) }) |h| if (h.len > 0) self.a.free(h);
+        // free each host buffer at its declared element type: a bytes view would
+        // free a u16/f32 allocation at align 1 and panic the allocator.
+        if (self.host_streams.len > 0) self.a.free(self.host_streams);
+        if (self.host_logits.len > 0) self.a.free(self.host_logits);
+        if (self.host_kva_f32.len > 0) self.a.free(self.host_kva_f32);
+        if (self.host_kva_bf.len > 0) self.a.free(self.host_kva_bf);
+        if (self.host_ol_f32.len > 0) self.a.free(self.host_ol_f32);
+        if (self.host_ol_bf.len > 0) self.a.free(self.host_ol_bf);
+        if (self.host_l.len > 0) self.a.free(self.host_l);
         self.* = undefined;
     }
 
@@ -242,7 +257,7 @@ pub const Runner = struct {
         const cfg = p.cfg;
         const H = cfg.hidden;
         const HC = cfg.hc;
-        const heads = cfg.heads;
+        const heads_max = cfg.max_heads;
         const nope = cfg.nope;
         const rope = cfg.rope;
         if (self.pos >= cache_rows) return error.AttentionCacheFull;
@@ -265,6 +280,8 @@ pub const Runner = struct {
         const diag = self.pos == 0;
         for (0..cfg.layers) |li| {
             const L = p.w[li];
+            const heads = L.heads; // 32 on DSA layers, 64 on sliding
+            _ = heads_max;
             try ihc.collapse(self.s, self.streams.ptr, p.attn_fn[li], p.attn_base[li], p.attn_scale[li], P.mixed, rows, H, HC, cfg.hc_eps, cfg.hc_magnitude, false);
             try norms.rms(self.s, P.mixed, .bf16, p.input_norm[li], P.xbuf, .bf16, rows, H, cfg.eps);
             try dense.decode(self.s, L.q_a, P.xbuf, .bf16, rows, P.qn, .bf16);
