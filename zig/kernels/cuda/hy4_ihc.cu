@@ -77,11 +77,16 @@ tf_hy4_ihc_collapse(const __nv_bfloat16* streams, const float* fn, const float* 
         }
     }
 
+    // __shfl_xor_sync needs every lane of the warp to participate; compute the
+    // reductions on all lanes first, then let lane 0 publish the warp's partials.
     const double ss_w = warp_sum(ss);
+    double mix_w[MAX_MIX];
+#pragma unroll
+    for (int i = 0; i < MAX_MIX; ++i) mix_w[i] = warp_sum(mix[i]);
     if (lane == 0) {
         s_ss[warp] = ss_w;
 #pragma unroll
-        for (int i = 0; i < MAX_MIX; ++i) s_mix[i][warp] = warp_sum(mix[i]);
+        for (int i = 0; i < MAX_MIX; ++i) s_mix[i][warp] = mix_w[i];
     }
     __syncthreads();
 
@@ -174,10 +179,13 @@ tf_hy4_hc_head(const __nv_bfloat16* streams, const float* fn, const float* base,
     }
 
     const double ss_w = warp_sum(ss);
+    double mix_w[MAX_HC];
+#pragma unroll
+    for (int i = 0; i < MAX_HC; ++i) mix_w[i] = warp_sum(mix[i]);
     if (lane == 0) {
         s_ss[warp] = ss_w;
 #pragma unroll
-        for (int i = 0; i < MAX_HC; ++i) s_mix[i][warp] = warp_sum(mix[i]);
+        for (int i = 0; i < MAX_HC; ++i) s_mix[i][warp] = mix_w[i];
     }
     __syncthreads();
 
