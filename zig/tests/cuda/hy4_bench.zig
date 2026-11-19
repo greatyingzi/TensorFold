@@ -313,7 +313,7 @@ pub fn exl3Real(gpu: Gpu, dir: []const u8, proj: []const u8) !void {
 
 
 /// Time every dense EXL3 projection of one real layer from the pack.
-pub fn exl3Layer(gpu: Gpu, dir: []const u8, layer: usize) !void {
+pub fn exl3Layer(gpu: Gpu, dir: []const u8, layer: usize, count: usize) !void {
     var arena: std.heap.ArenaAllocator = .init(gpu.gpa);
     defer arena.deinit();
     const a = arena.allocator();
@@ -341,12 +341,13 @@ pub fn exl3Layer(gpu: Gpu, dir: []const u8, layer: usize) !void {
     var dense = try cuda.exl3.Dense.load(gpu.d);
     defer dense.unload();
     var total_ms: f32 = 0;
+    for (0..count) |li| {
     for (list) |p| {
-        if (p.n % 128 != 0) {
-            std.debug.print("  {s}: skipped (n={d} not a multiple of 128)\n", .{ p.name, p.n });
+        if (p.n % 128 != 0 or (layer + li == 0 and std.mem.startsWith(u8, p.name, "mlp."))) {
+            std.debug.print("  L{d} {s}: skipped\n", .{ layer + li, p.name });
             continue;
         }
-        const proj = try std.fmt.allocPrint(a, "model.layers.{d}.{s}", .{ layer, p.name });
+        const proj = try std.fmt.allocPrint(a, "model.layers.{d}.{s}", .{ layer + li, p.name });
         const tr_name = try std.fmt.allocPrint(a, "{s}.trellis", .{proj});
         const shard = wm.get(tr_name) orelse return error.MissingExl3Tensor;
         const path = try std.fs.path.join(a, &.{ dir, shard.string });
@@ -383,7 +384,8 @@ pub fn exl3Layer(gpu: Gpu, dir: []const u8, layer: usize) !void {
         total_ms += ms;
         std.debug.print("  {s}: {d:.4} ms\n", .{ proj, ms });
     }
-    std.debug.print("exl3layer {d}: {d:.3} ms/token dense only  {d:.1} tok/s  ({d} real 3bpw projections)\n", .{ layer, total_ms, 1000.0 / total_ms, list.len });
+    }
+    std.debug.print("exl3layer {d}..{d}: {d:.3} ms/token dense only  {d:.1} tok/s  ({d} real 3bpw projections)\n", .{ layer, layer + count - 1, total_ms, 1000.0 / total_ms, list.len * count });
 }
 
 fn bfOfHost(bits: u16) f32 {

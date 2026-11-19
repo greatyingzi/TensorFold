@@ -18,7 +18,7 @@ pub fn main(init: std.process.Init) !u8 {
             return 0;
         }
         if (std.mem.eql(u8, args[1], "exl3layer")) {
-            try hy4_bench.exl3Layer(gpu, args[2], try std.fmt.parseInt(usize, args[3], 10));
+            try hy4_bench.exl3Layer(gpu, args[2], try std.fmt.parseInt(usize, args[3], 10), if (args.len > 4) try std.fmt.parseInt(usize, args[4], 10) else 1);
             return 0;
         }
         if (std.mem.eql(u8, args[1], "exl3real")) {
