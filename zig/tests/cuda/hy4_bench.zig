@@ -139,8 +139,15 @@ pub fn forwardBench(gpu: Gpu) !void {
     const attn_out = try r.zeros(16 * heads * vdim * 2);
     const wv = try r.zeros(heads * vdim * lw * 2);
     const wk = try r.zeros(heads * nope * lw * 2);
-    const sinks = try r.zeros(heads * 4);
     const nch = (cache_rows + 511) / 512;
+    const sinks = try r.zeros(heads * 4);
+    var expert_out: [2][layers][top_k]u64 = undefined;
+    for (0..layers) |li| {
+        for (0..top_k) |e| {
+            expert_out[0][li][e] = try r.zeros(16 * (2 * inter) * 2);
+            expert_out[1][li][e] = try r.zeros(16 * latent * 2);
+        }
+    }
 
     for ([_]usize{1}) |rows| {
         var t0 = try cuda.Event.init(gpu.d, true);
@@ -165,8 +172,8 @@ pub fn forwardBench(gpu: Gpu) !void {
                 var stem_outs: [top_k]Out = undefined;
                 var down_outs: [top_k]Out = undefined;
                 for (0..top_k) |e| {
-                    stem_outs[e] = .{ .q = lay[10][li], .out = outs[10][li] };
-                    down_outs[e] = .{ .q = lay[11][li], .out = outs[11][li] };
+                    stem_outs[e] = .{ .q = lay[10][li], .out = expert_out[0][li][e] };
+                    down_outs[e] = .{ .q = lay[11][li], .out = expert_out[1][li][e] };
                 }
                 for (0..4) |g| {
                     try a4.gemvMany(s, x_in[10][li], xs_in[10][li], stem_outs[g * 4 ..][0..4], rows);

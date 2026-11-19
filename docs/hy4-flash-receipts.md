@@ -33,6 +33,7 @@
 - attn/dense projections (42L x 6P): 11.15 ms/token = 89.7 tok/s, 230 GB/s = 84%
 - MLA attention math (absorb_q<192>, chunks, merge, expand_v<256>, gate; 4K cache): 7.3 ms/token
 - total affine4-5bpw estimate: 29.5 ms = 34 tok/s; at 3bpw projected 48-65 tok/s
+- full 42-layer step assembly with grouped expert launches (gemvMany, 8 launches/layer): **20.86 ms/token = 47.9 tok/s** (random affine4, all projections + MLA + sink merge). Earlier 32-separate-launches build was 37.45 ms/token = 26.7 tok/s under quant contention; the launch-count cut is the main win. Root cause of an intermediate `InputMismatch`: gemvMany rejects duplicate output pointers; each of the 16 experts now owns a distinct output buffer.
 - real-weight numeric witness: layer1 expert0 down_proj GPU vs CPU, worst rel 3.890e-3 = bf16 output precision (0.391%), zero missing rows
 
 ### Dual-node quantization (DGX00 head + DGX01 peer over CX7 10.0.1.x)
