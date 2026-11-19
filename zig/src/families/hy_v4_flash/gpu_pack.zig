@@ -31,10 +31,12 @@ pub const LayerWeights = struct {
     q_b: Linear = undefined,
     kv_a: Linear = undefined,
     kv_a_w: u64 = 0, // BF16 original for the n=576 projection (EXL3 needs n % 128 == 0)
+    kv_b_w: u64 = 0, // BF16 original kv_b weight, used to rebuild absorb/expand matrices
     kv_b: Linear = undefined,
     o: Linear = undefined,
     up: Linear = undefined,
     gate: Linear = undefined,
+    attn_gate_w: u64 = 0, // self_attn.linear_gate.weight (BF16, not EXL3)
     down: Linear = undefined,
     experts: ?cuda.exl3_experts.Layer = null,
 };
@@ -206,6 +208,8 @@ pub fn load(a: std.mem.Allocator, io: std.Io, d: *const cuda.Driver, dir: []cons
         L.q_a = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.q_a_proj", .{pre}), 3072, 1024);
         L.q_b = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.q_b_proj", .{pre}), 1024, 8192);
         L.kv_a_w = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.kv_a_proj_with_mqa.weight", .{pre}));
+        L.kv_b_w = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.kv_b_proj.weight", .{pre}));
+        L.attn_gate_w = try scalar(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.linear_gate.weight", .{pre}));
         L.kv_b = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.kv_b_proj", .{pre}), 512, 14336);
         L.o = try dense(a, io, &p, &files, wm, dir, try std.fmt.allocPrint(a, "{s}self_attn.o_proj", .{pre}), 8192, 3072);
         if (li > 0) {

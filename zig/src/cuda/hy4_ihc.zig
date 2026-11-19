@@ -15,6 +15,7 @@ pub const Ihc = struct {
     update_fn: Function,
     head_fn: Function,
     gates_fn: Function,
+    gate_sig_fn: Function,
 
     pub fn load(d: *const Driver) !Ihc {
         if (!kernels.available) return error.BuiltWithoutKernels;
@@ -26,6 +27,7 @@ pub const Ihc = struct {
             .update_fn = try mod.function("tf_hy4_stream_update"),
             .head_fn = try mod.function("tf_hy4_hc_head"),
             .gates_fn = try mod.function("tf_hy4_ihc_gates"),
+            .gate_sig_fn = try mod.function("tf_hy4_gate_sigmoid"),
         };
     }
 
@@ -74,6 +76,18 @@ pub const Ihc = struct {
         try launch_.launch(self.update_fn, .{ .grid = .{ .x = @intCast(rows), .y = @intCast(HC) }, .block = .{ .x = 256 } }, s, &a);
     }
 
+
+
+    /// Elementwise attention output gate: o[i] *= sigmoid(g[i]), g fp32, o bf16.
+    pub fn gateSigmoid(self: *const Ihc, s: Stream, o: u64, g: u64, n: usize) !void {
+        if (n == 0) return;
+        var a: Args = .{};
+        a.add(o);
+        a.add(g);
+        a.add(@as(i64, @intCast(n)));
+        const per: u32 = 256;
+        try launch_.launch(self.gate_sig_fn, .{ .grid = .{ .x = @intCast((n + per - 1) / per) }, .block = .{ .x = per } }, s, &a);
+    }
 
     /// Write pre[HC] and post[HC] gate vectors for the MoE residual update.
     pub fn gates(self: *const Ihc, s: Stream, streams: u64, fn_w: u64, base: u64, scale: u64, pre: u64, post: u64, rows: usize, H: usize, HC: usize, eps: f32, magnitude: f32) !void {
