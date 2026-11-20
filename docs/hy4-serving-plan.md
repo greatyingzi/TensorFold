@@ -30,6 +30,13 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 55 (AttentionCacheFull fixed; all located engineering bugs resolved)
+- Fixed AttentionCacheFull: backend.zig cacheCap was min(context,64); a 36-token templated prompt + 48 generated exceeded 64. Changed to full context (2048). Verified: 96-token generation now succeeds (previously errored at 48).
+- Also rebuilt native with engram dtype/OOM fixes, admission 66 GiB, and removed the per-layer LAYER debug print from session hot path.
+- Serve v7 stable: HTTP 200, loaded 175.8s, ~10 tok/s, official-structure chat template with high reasoning.
+- QUALITY STILL NOT ACHIEVED: output remains gibberish despite all fixes. Confirmed NOT caused by: routed_scale, stream grid, config eps, chat template, engram enablement, KV cache cap, EXL3 quantization (BF16 CPU reference also non-semantic with correct BPE encoding).
+- The remaining defect is in the SHARED forward math (session/weights/rotary/MoE) OR missing model data. Resolving requires an authoritative reference (vLLM/HF transformers on this exact checkpoint) to diff numerical outputs layer-by-layer. This is the necessary next phase; goal stays active.
+
 ## Progress round 54 (official chat structure template deployed; template ruled out as root cause)
 - Replaced the hand-written minimal chat template (bare {{ content }}) with a static expansion of the official chat_template.jinja structure: <｜hy_start:opensource｜>role<｜hy_middle:opensource｜>content<｜hy_end:opensource｜> plus reasoning_mode no_think and <think> tags. TensorFold's jinja engine cannot evaluate the official template's .format() calls, so HYTK was pre-expanded to the literal ':opensource'.
 - Template works: prompt token count jumped from 1 → 36 (special tokens tokenized correctly), serve stable HTTP 200.

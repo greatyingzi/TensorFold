@@ -61,7 +61,11 @@ const Owned = struct {
 /// does not multiply a full model's host KV. The GPU step has no cache yet, so this
 /// is only a row counter there.
 fn cacheCap(context: usize) usize {
-    return @min(context, 64);
+    // The lanes engine tracks prompt+generated rows here; 64 was far too small
+    // (a 36-token templated prompt + 48 generated already overflowed). The GPU
+    // runner owns its own 4096-row device cache, so let the backend track the
+    // full context window.
+    return context;
 }
 
 /// The compressed EXL3 device budget: about 63 GiB of uploaded 3bpw weights plus
