@@ -68,7 +68,7 @@ fn cacheCap(context: usize) usize {
 /// headroom for uploader staging and scratch, not the pack's file bytes (which
 /// include unquantized shards the runner never loads).
 pub fn textWeightBytes(_: std.mem.Allocator, _: std.Io, _: []const u8) !?u64 {
-    return @as(u64, 70) * (1 << 30);
+    return @as(u64, 66) * (1 << 30); // actual GPU-resident pack ~65.3 GiB
 }
 
 fn gpuStep(ptr: *anyopaque, token: usize) anyerror![]const f32 {

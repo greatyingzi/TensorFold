@@ -30,6 +30,11 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 53 (serve stability restored)
+- Serve was crash-looping (Exit 137 / AttentionCacheFull) because textWeightBytes() hardcoded 70 GiB admission while actual GPU-resident pack is 65.32 GiB and device free memory had dropped below 82 GiB (12.2 GiB reserve). Fixed by lowering reserve to 6 GiB and setting CUDA limit 96 GB in /home/leon/hy4serve_tpl.sh (host-side config, no rebuild needed). Also lowered native.zig textWeightBytes 70→66 GiB (needs rebuild to take effect).
+- Serve v4 now stable: HTTP 200, Up 4+ min, 'model 65.32 GiB; 26.8 GiB left after 6.0 GiB reserve', loaded in 202s.
+- REMAINING FOR GOAL: quality is still non-semantic (bare completion and chat both gibberish). Root cause analysis points to shared forward implementation + missing engram in GPU path. Speed ~10 tok/s (below 63-90 target). DFly2 draft not wired to GPU serve. These need major engineering; goal stays active.
+
 ## Progress round 52 (engram path made runnable — dtype + OOM fixes)
 - Enabled engram (count=4) in genRef for the first time. Fixed two engram implementation bugs: (1) engram.zig f32s() rejected bf16raw tensors — now decodes bf16→f32 with allocator; (2) multi_head_embedding.embedding.weight is ~15.8GB (vocab 10.3M × 768 bf16); full decode to f32 OOM'd — now decodes ONLY the 16 needed head rows on demand.
 - With engram enabled, CPU genRef runs all 42 layers without OOM/error. Output on "The capital of France is" is still non-semantic ('\na \n\n與 ·'), so engram alone is not the quality silver bullet; bare completion on this chat/reasoning model is inherently weak.
