@@ -30,6 +30,11 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 40 (expert path numerically SELF-CONSISTENT)
+- Full-1536 dump: latent_in RMS = 0.0657 (healthy distribution, not sparse). SwiGLU is quadratic for small inputs: random-x RMS 0.577 → 0.077 implies RMS 0.0657 → 0.077×(0.0657/0.577)² ≈ 0.001 — **observed 0.0009 matches.** The expert path is numerically self-consistent end to end; no bug there.
+- The defect moves UPSTREAM: is routed_down's EXL3 decode output the RIGHT scale? If the BF16 oracle (routed_expert_down_proj.weight [1536,3072] @ xbuf) gives RMS ≫ 0.0657, the 3bpw decode of this projection is wrong (trellis layout misread) and the whole routed branch under-fires vs the CPU reference's L2 jump (0.01→0.22).
+- Next: dump xbuf (3072 bf16) + latent_in at L1 in the runner; BF16-oracle matvec on host; compare RMS and values.
+
 ## Progress round 39 (EXPERT PATH EXONERATED — definitively)
 - Known-input substitution at L1 in the runner: with the harness's seeded random x uploaded over latent_in, expert_out max = **0.0770, matching the standalone harness's 0.070**. The expert path (kernel, Layer construction, pointers, scratch, picks, weights) is CORRECT inside the runner's full flow.
 - The defect is upstream: latent_in (routed_down's decode output) has the wrong content — its max looked healthy (0.2275) but the expert output implies an RMS ~85x too small (mostly near-zero values with a few peaks?).

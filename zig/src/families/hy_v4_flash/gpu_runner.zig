@@ -545,8 +545,8 @@ pub const Runner = struct {
                 try wts_buf.upload(0, std.mem.sliceAsBytes(self.host_wts));
                 // Routed: latent_down -> experts -> latent_up.
                 try dense.decode(self.s, L.routed_down, P.xbuf, .bf16, rows, self.latent_in, .bf16);
-                if (self.pos == 0 and li == 1) {
-                    // known-input substitution: if the expert path is sound, out must match the harness's 0.070 scale
+                if (false) {
+                    // known-input substitution (diagnostic, disabled)
                     const known = try self.a.alloc(u16, 1536);
                     defer self.a.free(known);
                     var kprng = std.Random.DefaultPrng.init(9);
@@ -560,13 +560,18 @@ pub const Runner = struct {
                     std.debug.print("GPUDUMP L1 substituted known x\n", .{});
                 }
                 if (self.pos == 0 and li == 1) {
-                    const li4 = try self.a.alloc(u16, 256);
+                    const li4 = try self.a.alloc(u16, 1536);
                     defer self.a.free(li4);
-                    var lb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.latent_in, .len = 512 };
+                    var lb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.latent_in, .len = 1536 * 2 };
                     try lb.download(0, std.mem.sliceAsBytes(li4));
                     var lmx: f32 = 0;
-                    for (li4) |v| lmx = @max(lmx, @abs(@as(f32, @bitCast(@as(u32, v) << 16))));
-                    std.debug.print("GPUDUMP L1 latent_in max256 {d:.4} first {d:.4}\n", .{ lmx, @as(f32, @bitCast(@as(u32, li4[0]) << 16)) });
+                    var lss: f64 = 0;
+                    for (li4) |v| {
+                        const fv = @as(f32, @bitCast(@as(u32, v) << 16));
+                        lmx = @max(lmx, @abs(fv));
+                        lss += @as(f64, fv) * fv;
+                    }
+                    std.debug.print("GPUDUMP L1 latent_in max {d:.4} rms {d:.4}\n", .{ lmx, @sqrt(lss / 1536.0) });
                 }
                 if (self.pos == 0 and li == 1) {
                     const el0 = L.experts orelse return error.RunnerNotReady;
