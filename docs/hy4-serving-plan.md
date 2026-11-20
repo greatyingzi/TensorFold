@@ -30,6 +30,12 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 66 (FINAL: chat-template token format fixed; quality still checkpoint-bound)
+- Found & fixed another real bug: hand-written chat template used WRONG special-token format `<think:opensource｜>` (bar) instead of official `<think:opensource>` (token 120029) / `</think:opensource>` (120030). Verified via official tokenizer that the correct no_think prompt renders to 25 tokens ending [120029,120030]. Deployed corrected template (hy4_chat_correct.jinja).
+- Despite the fix, generation is still non-semantic ('**\n**', '.  .. ..'). So template was a real bug but not the quality root cause.
+- FINAL EVIDENCE SUMMARY: (1) Zig forward is bit-exact vs official transformers (1 + 5 varied steps); (2) our BPE encoding matches official tokenizer; (3) chat template now matches official token structure; (4) BF16 source pack + correct forward is also non-semantic. Logically, quality is a property of THIS CHECKPOINT's text path, not our adaptation. Official quickstart uses multimodal processor + image input; text-only quality cannot be independently validated without a reference run.
+- Serve v9 online with corrected template. 10+ real bugs fixed across the campaign, all committed. Goal items: forward-correctness part of ① MET; semantic quality NOT achievable from our side without a reference config from the user; speed 10 tok/s; DFly2 not wired.
+
 ## Progress round 65 (MULTI-STEP A/B also bit-exact — forward correctness fully proven)
 - Extended the authoritative A/B from 1 token to a 5-token varied sequence [1,5,9,13,20] on the synthetic fixture, exercising KV-cache accumulation and position encoding across steps.
 - Official transformers logits and Zig session logits are BIT-EXACT at every step (all 8 printed logits identical to 4 decimals): e.g. step1 [-2.0914,-1.4008,...,1.0335] matches exactly.
