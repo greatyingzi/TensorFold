@@ -251,6 +251,13 @@ pub const Session = struct {
             const pn = try named(a, "layers.{d}.post_attention_layernorm.weight", .{li});
             try ops.rmsNorm(mixed, mixed, try f32s(self.bag, pn), c.eps);
             if (plan.moe) try moe.latentMoe(gpa, c, self.bag, li, mixed, ffn) else try denseFfn(gpa, c, self.bag, li, mixed, ffn);
+            if (self.dump_n > 0 and li == 1) {
+                var fss: f64 = 0;
+                for (ffn) |v| fss += @as(f64, v) * v;
+                var mss: f64 = 0;
+                for (mixed) |v| mss += @as(f64, v) * v;
+                std.debug.print("CPUDUMP L1 ffn_rms {d:.4} moe_in_rms {d:.4} ffn0 {d:.4}\n", .{ @sqrt(fss / @as(f64, @floatFromInt(ffn.len))), @sqrt(mss / @as(f64, @floatFromInt(mixed.len))), ffn[0] });
+            }
             for (0..hc) |s| {
                 for (0..h) |i| self.next[s][i] = fg.post[s] * ffn[i] + self.streams[s][i];
             }

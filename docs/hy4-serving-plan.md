@@ -30,6 +30,12 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 42 (divergence isolated to the combine block)
+- CPU/GPU MoE input MATCHES EXACTLY (rms 0.0430 vs 0.0433). CPU ffn_rms = **0.84**; GPU ≈ 0.05 — the entire 17x gap is inside the MoE.
+- combine_output_norm weights are ~0.93 in BOTH packs (healthy). The CPU's latentMoe ends with rmsNorm(routed+shared, combine_norm) whose output RMS ≈ weight RMS (~0.84 observed ✓) regardless of input scale — exactly the amplification the CPU shows.
+- My GPU combine (host-side rmsNorm with the same weights) produces 0.05 instead of ~0.9 → **the bug is in my combine block** (or it does not execute as believed). Suspects: the block's execution order vs the ffn probe, inv/cn arithmetic, or the upload target.
+- Next: instrument the combine block in the CLI (print ss, inv, cn_host[0], first outputs) — one build-run cycle to pinpoint.
+
 ## Progress round 41 (norms exonerated; divergence quantified)
 - xbuf_rms 0.0433 at L1's MoE input is CORRECT: the checkpoint's per-layer norm weights genuinely are ~0.04 (post_attn) / ~0.14 (input) — identical in BOTH the source BF16 and EXL3 packs; only model.norm is ~1.13. fp16-misdecode theory for norms disproven.
 - The expert path is fully self-consistent (quadratic SwiGLU scaling verified numerically).
