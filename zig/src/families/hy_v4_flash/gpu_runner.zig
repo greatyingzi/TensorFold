@@ -545,6 +545,29 @@ pub const Runner = struct {
                 try wts_buf.upload(0, std.mem.sliceAsBytes(self.host_wts));
                 // Routed: latent_down -> experts -> latent_up.
                 try dense.decode(self.s, L.routed_down, P.xbuf, .bf16, rows, self.latent_in, .bf16);
+                if (self.pos == 0 and li == 1) {
+                    const xb = try self.a.alloc(u16, 3072);
+                    defer self.a.free(xb);
+                    var xbv = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.xbuf, .len = 3072 * 2 };
+                    try xbv.download(0, std.mem.sliceAsBytes(xb));
+                    var xs: f64 = 0;
+                    for (xb) |v| {
+                        const fv = @as(f32, @bitCast(@as(u32, v) << 16));
+                        xs += @as(f64, fv) * fv;
+                    }
+                    const lfull = try self.a.alloc(u16, 1536);
+                    defer self.a.free(lfull);
+                    var lbv = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.latent_in, .len = 1536 * 2 };
+                    try lbv.download(0, std.mem.sliceAsBytes(lfull));
+                    std.debug.print("GPUDUMP L1 ORACLE xbuf_rms {d:.4} latent_rms {d:.4} latent0 {d:.4} latent1 {d:.4} xbuf0 {d:.4}\n", .{ @sqrt(xs / 3072.0), blk: {
+                        var s: f64 = 0;
+                        for (lfull) |v| {
+                            const fv = @as(f32, @bitCast(@as(u32, v) << 16));
+                            s += fv * fv;
+                        }
+                        break :blk @sqrt(s / 1536.0);
+                    }, @as(f32, @bitCast(@as(u32, lfull[0]) << 16)), @as(f32, @bitCast(@as(u32, lfull[1]) << 16)), @as(f32, @bitCast(@as(u32, xb[0]) << 16)) });
+                }
                 if (false) {
                     // known-input substitution (diagnostic, disabled)
                     const known = try self.a.alloc(u16, 1536);

@@ -30,6 +30,12 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 41 (norms exonerated; divergence quantified)
+- xbuf_rms 0.0433 at L1's MoE input is CORRECT: the checkpoint's per-layer norm weights genuinely are ~0.04 (post_attn) / ~0.14 (input) — identical in BOTH the source BF16 and EXL3 packs; only model.norm is ~1.13. fp16-misdecode theory for norms disproven.
+- The expert path is fully self-consistent (quadratic SwiGLU scaling verified numerically).
+- Remaining divergence, precisely quantified: with the SAME small xbuf (RMS 0.043), the CPU reference's L1 FFN output drives L2 mixed to 0.22 while the GPU's drives it to 0.017 (13x). Neither routed experts (verified) nor norms (verified) explain it.
+- Next: dump the CPU's L1 latent_in RMS and FFN-output RMS in dumpref, side by side with the GPU's (0.0657 / ~0.05), to find which term of the MoE (router weights? shared expert? combine norm? routed_scale?) carries the CPU's larger output.
+
 ## Progress round 40 (expert path numerically SELF-CONSISTENT)
 - Full-1536 dump: latent_in RMS = 0.0657 (healthy distribution, not sparse). SwiGLU is quadratic for small inputs: random-x RMS 0.577 → 0.077 implies RMS 0.0657 → 0.077×(0.0657/0.577)² ≈ 0.001 — **observed 0.0009 matches.** The expert path is numerically self-consistent end to end; no bug there.
 - The defect moves UPSTREAM: is routed_down's EXL3 decode output the RIGHT scale? If the BF16 oracle (routed_expert_down_proj.weight [1536,3072] @ xbuf) gives RMS ≫ 0.0657, the 3bpw decode of this projection is wrong (trellis layout misread) and the whole routed branch under-fires vs the CPU reference's L2 jump (0.01→0.22).
