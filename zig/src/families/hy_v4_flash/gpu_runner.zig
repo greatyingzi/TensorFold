@@ -388,7 +388,7 @@ pub const Runner = struct {
             std.debug.print("GPUDUMP L2 streams0_rms {d:.4}\n", .{@sqrt(s0 / 512.0)});
         }
         try ihc.collapse(self.s, self.streams.ptr, p.attn_fn[li], p.attn_base[li], p.attn_scale[li], P.mixed, rows, H, HC, cfg.hc_eps, cfg.hc_magnitude, false);
-            if (self.pos == 0 and li < 3) {
+            if (self.pos == 0) {
                 const mh = try self.a.alloc(u16, 8);
                 defer self.a.free(mh);
                 var mb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.mixed, .len = 16 };

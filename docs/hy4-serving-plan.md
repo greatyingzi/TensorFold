@@ -30,6 +30,11 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 46 (full 42-layer A/B after grid fix)
+- L00 rmsdiff 0.0000 (exact), L01 0.0030, L02 0.3157 (first value 0.226 vs CPU 0.221 matches, but other 7 dims differ), then divergence accumulates every layer; L38+ completely off (sign flips).
+- Root-cause grid fix is confirmed correct for L0/L1; a residual per-layer numerical drift remains and compounds. Token 0 → 478 (CPU target 68).
+- Next: diff L2's 8 dump values element-by-element; then trace L1's ffn output detail (CPU rms 0.838 vs GPU ~0.92 earlier — ~10% drift) which compounds through the 42 layers.
+
 ## Progress round 45 (ROOT CAUSE FOUND — update kernel grid was 2-D for a 1-D kernel)
 - `tf_hy4_stream_update` indexes a FLAT rows*HC*H space with only blockIdx.x, but the Zig binding launched grid (rows, HC): with rows=1, all four blocks wrote stream0's first 256 elements, leaving streams 1-3 UNTOUCHED. That is why they were identical and tiny throughout the whole decode.
 - Fixed grid to 1-D ceil(rows*HC*H/256). Immediately: L2 mixed first element **0.2256 vs CPU 0.2215** (near-exact), streams 1-3 now distinct and correctly scaled, token 0 → **478** (was 105409; CPU target 68).
