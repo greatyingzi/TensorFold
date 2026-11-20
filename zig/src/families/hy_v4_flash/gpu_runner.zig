@@ -499,6 +499,16 @@ pub const Runner = struct {
             try self.drows.?.rows(self.s, P.xbuf, cfg.hidden, L.attn_gate_w, gate_logits, heads * cfg.vdim, rows, heads * cfg.vdim, cfg.hidden);
             try ihc.gateSigmoid(self.s, P.attn_out, gate_logits, rows * heads * cfg.vdim);
             try dense.decode(self.s, L.o, P.attn_out, .bf16, rows, P.branch, .bf16);
+            // Attention-side stream update: streams += attn_post_gates * branch (the CPU session does this).
+            try ihc.gates(self.s, self.streams.ptr, p.attn_fn[li], p.attn_base[li], p.attn_scale[li], P.gates, P.gates + rows * HC * 4, rows, H, HC, cfg.hc_eps, cfg.hc_magnitude);
+            try ihc.update(self.s, self.streams.ptr, P.branch, P.gates + rows * HC * 4, rows, H, HC);
+            if (self.pos == 0 and li == 1) {
+                const g4 = try self.a.alloc(f32, 8);
+                defer self.a.free(g4);
+                var gb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.gates, .len = 32 };
+                try gb.download(0, std.mem.sliceAsBytes(g4));
+                std.debug.print("GPUDUMP L1 ATTNGATES pre0 {d:.4} post0 {d:.4}\n", .{ g4[0], g4[4] });
+            }
             if (diag and li < 4) {
                 var pb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.branch, .len = 8 };
                 var ph: [4]u16 = undefined;
@@ -649,6 +659,7 @@ pub const Runner = struct {
                 const hf: f64 = @floatFromInt(H);
                 const inv: f32 = @floatCast(1.0 / @sqrt(ss / hf + cfg.eps));
                 for (0..H) |i| self.host_combine_bf[i] = bf16(self.host_combine[i] * inv * cn_host[i]);
+                if (self.pos == 0 and li == 1) std.debug.print("GPUDUMP L1 COMBINE ss {d:.2} inv {d:.2} cn0 {d:.4} out0 {d:.4} out1 {d:.4}\n", .{ ss, inv, cn_host[0], @as(f32, @bitCast(@as(u32, self.host_combine_bf[0]) << 16)), @as(f32, @bitCast(@as(u32, self.host_combine_bf[1]) << 16)) });
                 try fb.upload(0, std.mem.sliceAsBytes(self.host_combine_bf));
             } else {
                 // Layer 0's dense MLP (BF16 weights): drows gives fp32, swiglu wants bf16.
@@ -673,6 +684,13 @@ pub const Runner = struct {
                 std.debug.print("hy4 diag L{d} ffn nan={} v0=0x{x}\n", .{ li, bad, fh[0] });
             }
             try ihc.gates(self.s, self.streams.ptr, p.ffn_fn[li], p.ffn_base[li], p.ffn_scale[li], P.gates, P.gates + rows * HC * 4, rows, H, HC, cfg.hc_eps, cfg.hc_magnitude);
+            if (self.pos == 0 and li == 1) {
+                const g4 = try self.a.alloc(f32, 8);
+                defer self.a.free(g4);
+                var gb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.gates, .len = 32 };
+                try gb.download(0, std.mem.sliceAsBytes(g4));
+                std.debug.print("GPUDUMP L1 FFNGATES pre0 {d:.4} post0 {d:.4}\n", .{ g4[0], g4[4] });
+            }
             try ihc.update(self.s, self.streams.ptr, P.ffn, P.gates + rows * HC * 4, rows, H, HC);
         }
         if (diag) {

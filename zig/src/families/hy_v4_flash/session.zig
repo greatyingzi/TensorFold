@@ -246,6 +246,7 @@ pub const Session = struct {
             for (0..hc) |s| @memcpy(self.streams[s], self.next[s]);
 
             const fg = try ihc.gates(gpa, c, self.bag, li, "ffn_hc", self.streams[0..hc]);
+            if (self.dump_n > 0 and li == 1) std.debug.print("CPUDUMP L1 FFNGATES pre0 {d:.4} post0 {d:.4} post1 {d:.4}\n", .{ fg.pre[0], fg.post[0], fg.post[1] });
             defer ihc.gatesDeinit(gpa, fg);
             try ihc.collapse(fg, self.streams[0..hc], mixed);
             const pn = try named(a, "layers.{d}.post_attention_layernorm.weight", .{li});

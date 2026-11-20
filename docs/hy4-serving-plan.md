@@ -30,6 +30,12 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 43 (gates exonerated; streams update under audit)
+- CPU/GPU L1 FFN gates MATCH (pre 0.0206 vs 0.0226, post0 0.1180 vs 0.1213) — the gates kernel and weights are correct; small post values are genuine model behavior.
+- The attention-side stream update (missing entirely) was added; combine verified correct (out0 0.832 ≈ CPU 0.84); L1 ffn now at CPU scale (0.92).
+- Remaining gap: after L1's updates, GPU streams produce L2 mixed 0.017 vs CPU 0.22. Internally consistent with post0×ffn≈0.11 — so either posts 2/3 differ (not yet dumped on GPU) or the streams-update/collapse interaction differs.
+- Next: dump GPU streams RMS after L1 update + posts 0-3, and the matching CPU streams; this isolates the last divergent term.
+
 ## Progress round 42 (divergence isolated to the combine block)
 - CPU/GPU MoE input MATCHES EXACTLY (rms 0.0430 vs 0.0433). CPU ffn_rms = **0.84**; GPU ≈ 0.05 — the entire 17x gap is inside the MoE.
 - combine_output_norm weights are ~0.93 in BOTH packs (healthy). The CPU's latentMoe ends with rmsNorm(routed+shared, combine_norm) whose output RMS ≈ weight RMS (~0.84 observed ✓) regardless of input scale — exactly the amplification the CPU shows.
