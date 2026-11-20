@@ -365,7 +365,19 @@ pub const Runner = struct {
             const L = p.w[li];
             const heads = L.heads; // 32 on DSA layers, 64 on sliding
             _ = heads_max;
-            try ihc.collapse(self.s, self.streams.ptr, p.attn_fn[li], p.attn_base[li], p.attn_scale[li], P.mixed, rows, H, HC, cfg.hc_eps, cfg.hc_magnitude, false);
+            if (self.pos == 0 and li == 2) {
+            const sv = try self.a.alloc(u16, 512);
+            defer self.a.free(sv);
+            var sb2 = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.streams.ptr, .len = 1024 };
+            try sb2.download(0, std.mem.sliceAsBytes(sv));
+            var s0: f64 = 0;
+            for (sv) |v| {
+                const fv = @as(f32, @bitCast(@as(u32, v) << 16));
+                s0 += fv * fv;
+            }
+            std.debug.print("GPUDUMP L2 streams0_rms {d:.4}\n", .{@sqrt(s0 / 512.0)});
+        }
+        try ihc.collapse(self.s, self.streams.ptr, p.attn_fn[li], p.attn_base[li], p.attn_scale[li], P.mixed, rows, H, HC, cfg.hc_eps, cfg.hc_magnitude, false);
             if (self.pos == 0 and li < 3) {
                 const mh = try self.a.alloc(u16, 8);
                 defer self.a.free(mh);
@@ -689,7 +701,7 @@ pub const Runner = struct {
                 defer self.a.free(g4);
                 var gb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.gates, .len = 32 };
                 try gb.download(0, std.mem.sliceAsBytes(g4));
-                std.debug.print("GPUDUMP L1 FFNGATES pre0 {d:.4} post0 {d:.4}\n", .{ g4[0], g4[4] });
+                std.debug.print("GPUDUMP L1 FFNGATES posts {d:.3} {d:.3} {d:.3} {d:.3}\n", .{ g4[4], g4[5], g4[6], g4[7] });
             }
             try ihc.update(self.s, self.streams.ptr, P.ffn, P.gates + rows * HC * 4, rows, H, HC);
         }

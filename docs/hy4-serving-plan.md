@@ -30,6 +30,12 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 44 (all four FFN posts match; attention-side pres under audit)
+- CPU posts [0.118, 0.303, 0.407, 0.265] vs GPU [0.121, 0.310, 0.413, 0.271] — ALL MATCH. FFN gate path fully verified.
+- GPU streams0 RMS after L1 = 0.0897, internally consistent with posts × ffn. But GPU L2 mixed = 0.017 implies L2's attn pre-gates ~0.02 where ~0.2 is expected (CPU reaches 0.22 with the same stream math).
+- Attention output is NOT zeroed (verified); branch values are small (0.02-0.15) but nonzero.
+- Next: dump CPU streams0 RMS at L2 entry + both sides' L2 attn pre-gates — the pre-gate computation for sliding/DLA layers (attn_fn[2]) is the last unaudited term.
+
 ## Progress round 43 (gates exonerated; streams update under audit)
 - CPU/GPU L1 FFN gates MATCH (pre 0.0206 vs 0.0226, post0 0.1180 vs 0.1213) — the gates kernel and weights are correct; small post values are genuine model behavior.
 - The attention-side stream update (missing entirely) was added; combine verified correct (out0 0.832 ≈ CPU 0.84); L1 ffn now at CPU scale (0.92).
