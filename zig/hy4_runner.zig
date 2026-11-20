@@ -17,6 +17,7 @@ const spec = @import("src/families/hy_v4_flash/spec.zig");
 const ops = @import("src/families/hy_v4_flash/ops.zig");
 const dfly_mod = @import("src/families/hy_v4_flash/dfly.zig");
 const rotary = @import("src/families/hy_v4_flash/rotary.zig");
+const full_forward = @import("src/families/hy_v4_flash/full_forward.zig");
 
 fn nowNs() i64 {
     var ts: std.posix.timespec = undefined;
@@ -170,6 +171,21 @@ fn dumpRef(a: std.mem.Allocator, io: std.Io, dir: []const u8, token: usize) !voi
 }
 
 
+fn exportLogits(a: std.mem.Allocator, io: std.Io, dir: []const u8) !void {
+    const meta = @import("src/families/hy_v4_flash/loader.zig").EngramMeta{ .source_tokenizer_len = 128 };
+    var bag = try weights.load(a, io, dir, &meta);
+    defer bag.deinit();
+    var c = try config.parse(a, @embedFile("src/families/hy_v4_flash/config_synthetic_fixture.json"));
+    c.engram.count = 0;
+    c.allow_no_engram = true;
+    var s = try session.Session.init(a, &c, &bag, 4);
+    defer s.deinit();
+    const logits = try s.step(1);
+    std.debug.print("ZIG_LOGITS8", .{});
+    for (logits[0..8]) |v| std.debug.print(" {d:.4}", .{v});
+    std.debug.print("\n", .{});
+}
+
 fn genRef(a: std.mem.Allocator, io: std.Io, dir: []const u8, prompt_csv: []const u8, steps: usize) !void {
     const adm = try loader.inspect(a, io, dir);
     var c = try config.read(a, io, dir);
@@ -260,6 +276,10 @@ pub fn main(init: std.process.Init) !void {
         const seed = try std.fmt.parseInt(usize, layers_s, 10);
         const steps = try std.fmt.parseInt(usize, it.next() orelse return error.BadArgs, 10);
         try specDecode(a, io, dir, seed, steps);
+        return;
+    }
+    if (std.mem.eql(u8, token_s, "exportlogits")) {
+        try exportLogits(a, io, dir);
         return;
     }
     if (std.mem.eql(u8, token_s, "genref")) {

@@ -174,6 +174,20 @@ pub fn oneToken(gpa: std.mem.Allocator, c: *const config.Config, bag: *const wei
     try matvecW(logits, bag, "lm_head.weight", final, c.vocab, h);
 }
 
+test "hy4 export: reference hidden for authoritative comparison" {
+    const gpa = std.testing.allocator;
+    const meta = @import("loader.zig").EngramMeta{ .source_tokenizer_len = 128 };
+    var bag = try weights.load(gpa, std.testing.io, "zig/src/families/hy_v4_flash/fixtures/synthetic", &meta);
+    defer bag.deinit();
+    const c = try config.parse(gpa, @embedFile("config_synthetic_fixture.json"));
+    const logits = try gpa.alloc(f32, c.vocab);
+    defer gpa.free(logits);
+    try oneToken(gpa, &c, &bag, 1, logits);
+    std.debug.print("ZIG_LOGITS8", .{});
+    for (logits[0..8]) |v| std.debug.print(" {d:.4}", .{v});
+    std.debug.print("\n", .{});
+}
+
 test "hy4 host: all synthetic layers run end to end" {
     const gpa = std.testing.allocator;
     const meta = @import("loader.zig").EngramMeta{ .source_tokenizer_len = 128 };
