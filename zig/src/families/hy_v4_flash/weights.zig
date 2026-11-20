@@ -53,9 +53,7 @@ pub const Bag = struct {
     }
 
     pub fn get(self: *const Bag, name: []const u8) ?*const Tensor {
-        const t = self.map.getPtr(name);
-        if (t == null) std.debug.print("MISSING_TENSOR {s}\n", .{name});
-        return t;
+        return self.map.getPtr(name);
     }
 
     pub fn count(self: *const Bag) usize {

@@ -181,12 +181,7 @@ fn exportLogits(a: std.mem.Allocator, io: std.Io, dir: []const u8) !void {
     var s = try session.Session.init(a, &c, &bag, 8);
     defer s.deinit();
     const seq = [_]usize{ 1, 5, 9, 13, 20 };
-    for (seq, 0..) |tok, step| {
-        const logits = try s.step(tok);
-        std.debug.print("ZIG_SEQ {d} tok={d} logits8", .{ step, tok });
-        for (logits[0..8]) |v| std.debug.print(" {d:.4}", .{v});
-        std.debug.print("\n", .{});
-    }
+    for (seq) |tok| _ = try s.step(tok);
 }
 
 fn genRef(a: std.mem.Allocator, io: std.Io, dir: []const u8, prompt_csv: []const u8, steps: usize) !void {
