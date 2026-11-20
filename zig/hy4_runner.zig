@@ -178,12 +178,15 @@ fn exportLogits(a: std.mem.Allocator, io: std.Io, dir: []const u8) !void {
     var c = try config.parse(a, @embedFile("src/families/hy_v4_flash/config_synthetic_fixture.json"));
     c.engram.count = 0;
     c.allow_no_engram = true;
-    var s = try session.Session.init(a, &c, &bag, 4);
+    var s = try session.Session.init(a, &c, &bag, 8);
     defer s.deinit();
-    const logits = try s.step(1);
-    std.debug.print("ZIG_LOGITS8", .{});
-    for (logits[0..8]) |v| std.debug.print(" {d:.4}", .{v});
-    std.debug.print("\n", .{});
+    const seq = [_]usize{ 1, 5, 9, 13, 20 };
+    for (seq, 0..) |tok, step| {
+        const logits = try s.step(tok);
+        std.debug.print("ZIG_SEQ {d} tok={d} logits8", .{ step, tok });
+        for (logits[0..8]) |v| std.debug.print(" {d:.4}", .{v});
+        std.debug.print("\n", .{});
+    }
 }
 
 fn genRef(a: std.mem.Allocator, io: std.Io, dir: []const u8, prompt_csv: []const u8, steps: usize) !void {

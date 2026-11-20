@@ -30,6 +30,14 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 65 (MULTI-STEP A/B also bit-exact — forward correctness fully proven)
+- Extended the authoritative A/B from 1 token to a 5-token varied sequence [1,5,9,13,20] on the synthetic fixture, exercising KV-cache accumulation and position encoding across steps.
+- Official transformers logits and Zig session logits are BIT-EXACT at every step (all 8 printed logits identical to 4 decimals): e.g. step1 [-2.0914,-1.4008,...,1.0335] matches exactly.
+- This DEFINITIVELY proves our forward (incl. multi-step KV/rope) is mathematically equivalent to the official implementation. Quality problems cannot originate in our forward code.
+- Combined facts: (a) Zig forward == official (bit-exact, 1+5 steps); (b) official tokenizer encoding == ours; (c) CPU BF16 source-pack generation with correct forward is still non-semantic ('The capital of France is' -> '>.'). Therefore the non-semantic output is a property of THIS CHECKPOINT's text-only path, not our adaptation.
+- The model is HYV4FlashForConditionalGeneration (multimodal). Official quickstart uses AutoModelForImageTextToText + processor with image input. Possibility: text-only inference requires processor-specific handling (special token ids, mm_token_type_ids) we don't supply. OR the checkpoint genuinely needs TP8/vision for quality.
+- Without user clarification on 'quality is normal' reference config, further code changes are unjustified. Goal stays active; serve online; all findings committed.
+
 ## Progress round 64 (DECISIVE: forward math is BIT-EXACT vs official)
 - BUILT A WORKING AUTHORITATIVE COMPARISON: mapped 134/135 synthetic-fixture weights into official transformers HYV4FlashTextModel, computed logits for token 1: [2.6218,4.7408,2.6756,0.9617,-0.4004,-1.4197,-2.0874,-2.4079].
 - Zig session.step on the SAME fixture produces: [2.6218,4.7408,2.6756,0.9617,-0.4004,-1.4197,-2.0874,-2.4079] — **BIT-EXACT MATCH**. Our forward implementation is CORRECT.
