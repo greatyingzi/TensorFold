@@ -30,6 +30,14 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 56 (DEFINITIVE ROOT CAUSE — hardware/engram, not code)
+- Official README + pack inspection: Hy4 Flash is a 220B model with **64B Engram params (1/3 of model)**, one of three core architectural innovations. EXL3 pack carries 126.9 GB of UNQUANTIZED BF16 Engram weights (4 x 15.84 GB embedding tables at layers 1/11/21/31).
+- Our GPU path has ZERO engram support: gpu_pack doesn't load engram tensors, gpu_runner never calls engram.inject, serve sets engram.count=0. We are running the model with 1/3 of its parameters disabled → gibberish is EXPECTED.
+- HARDWARE CONSTRAINT: GB10 has 128 GB unified memory; backbone alone uses 65 GB. Full Engram needs +127 GB = 192 GB — impossible on 1 GPU. Official vLLM deployment uses **TP8 (8 GPUs)** precisely for this.
+- All 6 code bugs found this session are real and fixed (stream grid, routed_scale, config eps, engram dtype/OOM, chat template, cache cap) — committed 62efa6065..e1158b0cf.
+- GOAL STATUS: ④ serve-online MET (v7 HTTP 200 stable). ① quality and ③ draft NOT achievable on single GB10 without either (A) 8-GPU TP环境, (B) quantizing Engram to ~3bpw (126.9→~19GB) + writing GPU engram kernels, or (C) accepting reduced quality. ② speed 10 tok/s below target.
+- Awaiting user decision on hardware/quantization direction.
+
 ## Progress round 55 (AttentionCacheFull fixed; all located engineering bugs resolved)
 - Fixed AttentionCacheFull: backend.zig cacheCap was min(context,64); a 36-token templated prompt + 48 generated exceeded 64. Changed to full context (2048). Verified: 96-token generation now succeeds (previously errored at 48).
 - Also rebuilt native with engram dtype/OOM fixes, admission 66 GiB, and removed the per-layer LAYER debug print from session hot path.
