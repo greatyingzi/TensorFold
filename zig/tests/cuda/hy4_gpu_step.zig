@@ -30,6 +30,10 @@ pub fn main(init: std.process.Init) !void {
         for (logits, 0..) |v, j| {
             if (v > logits[best]) best = j;
         }
+        // logits statistics
+        var lsum: f64 = 0;
+        for (logits) |v| lsum += v;
+        std.debug.print("STEP {d} logits mean {d:.3}\n", .{ i, lsum / @as(f64, @floatFromInt(logits.len)) });
         // top-5 diagnostic
         const tmp = try a.alloc(f32, logits.len);
         defer a.free(tmp);

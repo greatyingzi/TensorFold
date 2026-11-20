@@ -258,6 +258,8 @@ pub fn load(a: std.mem.Allocator, io: std.Io, d: *const cuda.Driver, dir: []cons
         const bits: u32 = @bitCast(f);
         lmbf[i] = @truncate(bits >> 16);
     }
+    // The pack stores a standalone lm_head.weight (F16); config tie_word_embeddings=false
+    // and A/B testing confirmed using it (not the embed tokens) gives better output.
     p.lm_head_w = try p.up.dev(std.mem.sliceAsBytes(lmbf));
     p.final_norm = try scalarF32(a, io, &p, &files, wm, dir, "model.norm.weight");
     p.head_fn = try scalar(a, io, &p, &files, wm, dir, "model.hc_head.hc_head_fn");

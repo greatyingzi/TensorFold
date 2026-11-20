@@ -30,6 +30,18 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 61 (tied lm_head hypothesis RULED OUT)
+- A/B tested tying lm_head to embed_tokens (official declares _tied_weights_keys, but pack has a standalone F16 lm_head with values differing 0.19 from BF16 embed). Result: tied version produced WORSE output (high-id rare tokens, logits ~55, garbled mixed-script text like '税务总局机构地区RefSeq'). Reverted — standalone lm_head.weight is correct for this checkpoint (config tie_word_embeddings=false wins over class-level _tied_weights_keys).
+- logits mean oscillates (1.77→2.55→0.81→0.16→-1.25) and max grows 7-21 with the CORRECT lm_head — this is plausibly normal for growing attention context (no norm bug confirmed).
+- CLI now has top-5 + logits-mean diagnostics (kept, useful for future A/B).
+- CONCLUSION after full authoritative audit + 10+ bug fixes: remaining quality gap is dominated by missing Engram (64B params, 127GB, needs TP8) — not fixable on single GB10. Other gaps: compressed indexer not in GPU path.
+
+## Progress round 60 (tied lm_head hypothesis — UNVERIFIED)
+- Found: pack's `lm_head.weight` (F16) and `model.embed_tokens.weight` (BF16) have DIFFERENT values (max abs diff 0.19), yet official modeling code declares `_tied_weights_keys = {lm_head.weight: model.language_model.embed_tokens.weight}` → official uses embed tokens as the output head. Our GPU pack used the standalone lm_head.weight — potentially wrong.
+- Set gpu_pack.lm_head_w = p.embed (tied) as an A/B experiment. Build succeeded (BUILD_RC=0) but DGX network died before generation results could be read. This change is UNVERIFIED — kept uncommitted in working tree. If DGX recovers, run CLI top-5: if output becomes semantic, commit; if worse, revert to standalone lm_head.
+- Also observed: logits max grows 7.95→21 over 10 steps from BOS; mean-logits diagnostic added to CLI (uncommitted) to check if this is norm-related. BOS bare generation gives 'ffi  1 1  1 ' — structured high-frequency tokens, consistent with Engram-missing degradation.
+- DGX network intermittently unreachable throughout round — remains the primary infrastructure blocker.
+
 ## Progress round 59 (full authoritative audit complete)
 - Systematically diffed our entire forward against authoritative modeling_hy_v4_flash.py. CONFIRMED CORRECT: IHC gates/head/stream-init, attention scaling, gate weight naming (linear_gate), sink attention, router fp32+group topk, expert swiglu clamp, dense_rows fp32 output, MoE combine order.
 - CONFIRMED FIXED this session: (1) post_proj_norm after o_proj [shared CPU+GPU bug], (2) attention sigmoid gate in CPU session [CPU-only bug]. Build succeeded, serve v8 deployed. Quality changed from '**' repetition to '|' repetition but STILL non-semantic.
