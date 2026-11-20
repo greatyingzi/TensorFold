@@ -546,6 +546,20 @@ pub const Runner = struct {
                 // Routed: latent_down -> experts -> latent_up.
                 try dense.decode(self.s, L.routed_down, P.xbuf, .bf16, rows, self.latent_in, .bf16);
                 if (self.pos == 0 and li == 1) {
+                    // known-input substitution: if the expert path is sound, out must match the harness's 0.070 scale
+                    const known = try self.a.alloc(u16, 1536);
+                    defer self.a.free(known);
+                    var kprng = std.Random.DefaultPrng.init(9);
+                    for (known) |*v| {
+                        const fv: f32 = kprng.random().float(f32) * 2.0 - 1.0;
+                        const bits: u32 = @bitCast(fv);
+                        v.* = @truncate(bits >> 16);
+                    }
+                    var kb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.latent_in, .len = 1536 * 2 };
+                    try kb.upload(0, std.mem.sliceAsBytes(known));
+                    std.debug.print("GPUDUMP L1 substituted known x\n", .{});
+                }
+                if (self.pos == 0 and li == 1) {
                     const li4 = try self.a.alloc(u16, 256);
                     defer self.a.free(li4);
                     var lb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.latent_in, .len = 512 };
@@ -553,6 +567,12 @@ pub const Runner = struct {
                     var lmx: f32 = 0;
                     for (li4) |v| lmx = @max(lmx, @abs(@as(f32, @bitCast(@as(u32, v) << 16))));
                     std.debug.print("GPUDUMP L1 latent_in max256 {d:.4} first {d:.4}\n", .{ lmx, @as(f32, @bitCast(@as(u32, li4[0]) << 16)) });
+                }
+                if (self.pos == 0 and li == 1) {
+                    const el0 = L.experts orelse return error.RunnerNotReady;
+                    std.debug.print("GPUDUMP L1 LAYER experts={d} dims={d} width={d} cb={d} uk2={d} gus={d} limit={d:.1} act={d}\n", .{ el0.experts, el0.dims, el0.width, @backingInt(el0.codebook), el0.uniform_k2, el0.gu_stride, el0.limit, el0.act_mode });
+                    std.debug.print("GPUDUMP L1 PTRS gate=0x{x} k2=0x{x} suhg=0x{x} svhg=0x{x} suhd=0x{x} svhd=0x{x}\n", .{ el0.gate, el0.gate_k2, el0.suh_g, el0.svh_g, el0.suh_d, el0.svh_d });
+                    std.debug.print("GPUDUMP L1 SCRATCH base=0x{x} len={d} pick=0x{x} wts=0x{x} x=0x{x} out=0x{x}\n", .{ self.expert_scratch, self.expert_scratch_len, self.pick_dev, self.wts_dev, self.latent_in, self.expert_out });
                 }
                 const ex = self.ex orelse return error.RunnerNotReady;
                 const el = L.experts orelse return error.RunnerNotReady;

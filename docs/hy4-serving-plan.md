@@ -30,6 +30,11 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 39 (EXPERT PATH EXONERATED — definitively)
+- Known-input substitution at L1 in the runner: with the harness's seeded random x uploaded over latent_in, expert_out max = **0.0770, matching the standalone harness's 0.070**. The expert path (kernel, Layer construction, pointers, scratch, picks, weights) is CORRECT inside the runner's full flow.
+- The defect is upstream: latent_in (routed_down's decode output) has the wrong content — its max looked healthy (0.2275) but the expert output implies an RMS ~85x too small (mostly near-zero values with a few peaks?).
+- Next: dump latent_in's full-1536 RMS; then verify the routed_down EXL3 decode against the BF16 source (`mlp.routed_expert_down_proj.weight` [1536,3072]) with a matvec oracle — the same BF16-reference method that cracked the expert check.
+
 ## Progress round 38 (in-situ weights intact; field diff remains)
 - In-situ integrity at L1: expert 223's trellis pointer valid (0xf13616200000), first words nonzero (0x59eaea4f), suh scales plausible (±0.019) — device-memory corruption RULED OUT for the pointer table and picked expert's data.
 - With weights intact, input healthy (0.23), picks/weights correct, scratch zeroed, and the standalone harness reproducing correct output at both 4- and 512-expert scale, the remaining difference is an unspotted Layer-field or argument mismatch between gpu_pack.loadExperts and the working harness construction.
