@@ -510,6 +510,15 @@ pub const Runner = struct {
             }
             if (diag and li <= 2) std.debug.print("hy4 diag L{d} merge l0={d:.4} ol0={d:.4}\n", .{ li, self.host_l[0], self.host_ol_f32[0] });
             try self.ol_dev.upload(0, std.mem.sliceAsBytes(self.host_ol_bf[0..nout]));
+            if (li <= 1) {
+                const cb = try self.a.alloc(u16, 16);
+                defer self.a.free(cb);
+                var cbdev = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.attn_out, .len = 32 };
+                try cbdev.download(0, std.mem.sliceAsBytes(cb));
+                var cr: f32 = 0;
+                for (cb) |v| cr = @max(cr, @abs(@as(f32, @bitCast(@as(u32, v) << 16))));
+                std.debug.print("GPUSTEP pos{d} L{d} attn_out_abs0 {d:.4}\n", .{ self.pos, li, @as(f32, @bitCast(@as(u32, cb[0]) << 16)) });
+            }
             try mla.expandV(self.s, self.ol_dev.ptr, self.wv[li], P.attn_out, rows, heads, cfg.vdim, cfg.kv_lora);
             if (diag and li <= 2) {
                 var pb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.attn_out, .len = 8 };
@@ -597,6 +606,7 @@ pub const Runner = struct {
                 try rl.download(0, std.mem.sliceAsBytes(self.host_router));
                 var bias_buf = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = L.router_bias, .len = 512 * 4 };
                 try bias_buf.download(0, std.mem.sliceAsBytes(self.host_router_bias));
+                if (self.pos == 0 and li == 1) std.debug.print("GPUDUMP L1 routed_scale={d:.3} topk={d} router0={d:.3} bias0={d:.3}\n", .{ cfg.routed_scale, cfg.topk, self.host_router[0], self.host_router_bias[0] });
                 try self.hostRoute();
                 var pick_buf = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.pick_dev, .len = rows * p.cfg.topk * 4 };
                 try pick_buf.upload(0, std.mem.sliceAsBytes(self.host_pick));

@@ -153,6 +153,16 @@ pub fn latentMoe(gpa: std.mem.Allocator, c: *const config.Config, bag: *const we
     const latent_in = try gpa.alloc(f32, lat);
     defer gpa.free(latent_in);
     try matvecW(latent_in, bag, down_name, x, lat, c.hidden);
+    if (layer == 1) {
+        var s: f64 = 0;
+        for (latent_in) |v| s += @as(f64, v) * v;
+        std.debug.print("CPU MOE L1 latent_rms {d:.4} latent0 {d:.4}\n", .{ @sqrt(s / @as(f64, @floatFromInt(lat))), latent_in[0] });
+        std.debug.print("CPU MOE L1 picks ", .{});
+        for (r.indices[0..@min(8, r.indices.len)]) |e| std.debug.print("{d} ", .{e});
+        std.debug.print(" wts ", .{});
+        for (r.weights[0..@min(8, r.weights.len)]) |wv| std.debug.print("{d:.3} ", .{wv});
+        std.debug.print("\n", .{});
+    }
 
     const gu_name = try name(gpa, prefix, "experts.gate_up_proj");
     defer gpa.free(gu_name);

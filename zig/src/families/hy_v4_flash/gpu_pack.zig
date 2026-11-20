@@ -202,7 +202,24 @@ pub fn load(a: std.mem.Allocator, io: std.Io, d: *const cuda.Driver, dir: []cons
     var doc = try std.json.parseFromSlice(std.json.Value, a, idx_text, .{});
     const wm = doc.value.object.get("weight_map").?.object;
     var files = std.StringHashMap(*sf.File).init(a);
-    var p: Pack = .{ .a = a, .up = .{ .d = d, .gpa = a, .max_buffers = 200000 }, .cfg = .{} };
+    var cfg: Config = .{};
+    // Read routing scale from the pack's text_config (the converter preserves it).
+    const cfg_path = try join(a, dir, "config.json");
+    if (std.Io.Dir.cwd().readFileAlloc(io, cfg_path, a, .limited(16 << 20))) |ct| {
+        var cdoc = std.json.parseFromSlice(std.json.Value, a, ct, .{}) catch null;
+        if (cdoc) |*cd| {
+            if (cd.value.object.get("text_config")) |tc| {
+                if (tc.object.get("routed_scaling_factor")) |rs| {
+                    cfg.routed_scale = switch (rs) {
+                        .float => |fv| @floatCast(fv),
+                        .integer => |iv| @floatFromInt(iv),
+                        else => cfg.routed_scale,
+                    };
+                }
+            }
+        }
+    } else |_| {}
+    var p: Pack = .{ .a = a, .up = .{ .d = d, .gpa = a, .max_buffers = 200000 }, .cfg = cfg };
     errdefer p.deinit();
     p.embed_host = (try getTensor(a, io, &files, wm, dir, "model.embed_tokens.weight")).bytes;
     p.embed = try p.up.dev(p.embed_host);

@@ -30,6 +30,12 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 48 (SECOND ROOT CAUSE — routed_scale hardcoded 1.0)
+- gpu_pack.Config.routed_scale was hardcoded 1.0 and never read from the pack's config.json, while the real value is 3.998. This made every routed-expert weight ~4x too small: GPU wts 0.068 vs CPU 0.277 (ratio 0.25), exactly 1/routed_scale.
+- Fixed: gpu_pack.load() now parses config.json → text_config.routed_scaling_factor. After fix: routed_scale=3.998, wts 0.270/0.264/..., matches CPU; expert_out 4x larger.
+- Symptom resolved: greedy decode no longer loops on token 478 ('**'); tokens now vary (0→443→41056→47738→306→76→113076→443...). The earlier loop was caused by 4x-weak MoE collapsing the logits.
+- Still need: serve rebuild + real-prompt quality check; full 42-layer quantization-error characterization (3bpw vs BF16 will never match exactly).
+
 ## Progress round 47 (acceptance-standard correction + token-loop symptom)
 - IMPORTANT: CPU reference uses BF16 source pack, GPU uses EXL3 3bpw pack — they CANNOT match element-wise; 3bpw quantization error compounds over 42 layers. Chasing exact CPU/GPU FFN equality past L2 was the wrong acceptance target.
 - Verified truth: root-cause stream-update grid fix makes L0/L1 match CPU exactly; from L2 the divergence is quantization + router divergence (GPU picks [497,218,223,3] at L1), which is expected for 3bpw.
