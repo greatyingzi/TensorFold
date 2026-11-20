@@ -169,6 +169,37 @@ fn dumpRef(a: std.mem.Allocator, io: std.Io, dir: []const u8, token: usize) !voi
     std.debug.print("CPUDUMP NEXT {d}\n", .{best});
 }
 
+
+fn genRef(a: std.mem.Allocator, io: std.Io, dir: []const u8, prompt_csv: []const u8, steps: usize) !void {
+    const adm = try loader.inspect(a, io, dir);
+    var c = try config.read(a, io, dir);
+    c.engram.count = 0;
+    c.allow_no_engram = true;
+    var bag = try weights.loadStreaming(a, io, dir, &adm.meta, 0);
+    defer bag.deinit();
+    var s = try session.Session.init(a, &c, &bag, 8 + steps);
+    defer s.deinit();
+    var it = std.mem.splitScalar(u8, prompt_csv, ',');
+    var toks = std.ArrayList(usize).empty;
+    while (it.next()) |t| {
+        const v = std.fmt.parseInt(usize, std.mem.trim(u8, t, " "), 10) catch continue;
+        try toks.append(a, v);
+    }
+    if (toks.items.len == 0) try toks.append(a, 0);
+    for (toks.items) |t| _ = try s.step(t);
+    std.debug.print("GENREF prompt done ({d} tokens)\n", .{toks.items.len});
+    var tok = toks.items[toks.items.len - 1];
+    for (0..steps) |i| {
+        const logits = try s.step(tok);
+        var best: usize = 0;
+        for (logits, 0..) |v, j| {
+            if (v > logits[best]) best = j;
+        }
+        std.debug.print("GENREF step {d}: {d} -> {d}\n", .{ i, tok, best });
+        tok = best;
+    }
+}
+
 fn headVec(y: []f32, bag: *const @import("src/families/hy_v4_flash/weights.zig").Bag, x: []f32, rows: usize, cols: usize, eps: f32) !void {
     _ = eps;
     const t = bag.get("lm_head.weight") orelse return error.MissingHy4Tensor;
@@ -230,6 +261,11 @@ pub fn main(init: std.process.Init) !void {
         const seed = try std.fmt.parseInt(usize, layers_s, 10);
         const steps = try std.fmt.parseInt(usize, it.next() orelse return error.BadArgs, 10);
         try specDecode(a, io, dir, seed, steps);
+        return;
+    }
+    if (std.mem.eql(u8, token_s, "genref")) {
+        const steps_s = it.next() orelse return error.BadArgs;
+        try genRef(a, io, dir, layers_s, try std.fmt.parseInt(usize, steps_s, 10));
         return;
     }
     if (std.mem.eql(u8, token_s, "dumpref")) {
