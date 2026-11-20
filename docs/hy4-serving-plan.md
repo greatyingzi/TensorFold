@@ -30,6 +30,11 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 38 (in-situ weights intact; field diff remains)
+- In-situ integrity at L1: expert 223's trellis pointer valid (0xf13616200000), first words nonzero (0x59eaea4f), suh scales plausible (±0.019) — device-memory corruption RULED OUT for the pointer table and picked expert's data.
+- With weights intact, input healthy (0.23), picks/weights correct, scratch zeroed, and the standalone harness reproducing correct output at both 4- and 512-expert scale, the remaining difference is an unspotted Layer-field or argument mismatch between gpu_pack.loadExperts and the working harness construction.
+- Next: dump the full exl3_experts.Layer struct values from BOTH the runner and the harness at runtime and diff field-by-field (experts, dims, width, codebook, uniform_k2, gu_stride, limit, act_mode, all 12 buffer pointers); alternatively byte-compare the runner's uploaded stacked-scale buffers against the pack files.
+
 ## Progress round 37 (bug is context-dependent)
 - act_mode=0 A/B: expert_out unchanged (0.0009) — act_mode ruled out.
 - E512 harness (512 experts, real picks 223/395/382/497, real weights): GPU max 0.070 on random x — **the 512-expert scale works standalone.** (Its printed ref was the stale experts-0-3 block — void; the scale verdict stands from E4 + linearity.)

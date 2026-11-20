@@ -513,6 +513,26 @@ pub const Runner = struct {
             if (li > 0) {
                 // Router: gate.weight @ x on device, sigmoid+bias top-k on host.
                 try self.drows.?.rows(self.s, P.xbuf, H, L.router_w, self.router_logits, 512, rows, 512, H);
+                if (self.pos == 0 and li == 1) {
+                    const el = L.experts orelse return error.RunnerNotReady;
+                    // read back expert 223's first suh scales (fp16) from the stacked table
+                    const sh = try self.a.alloc(u8, 8);
+                    defer self.a.free(sh);
+                    var sb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = el.suh_g + 223 * 1536 * 2, .len = 8 };
+                    try sb.download(0, sh);
+                    const s0: f16 = @bitCast(std.mem.readInt(u16, sh[0..2], .little));
+                    const s1: f16 = @bitCast(std.mem.readInt(u16, sh[2..4], .little));
+                    // read back the first trellis words via the pointer table
+                    const pt = try self.a.alloc(u64, 1);
+                    defer self.a.free(pt);
+                    var pb2 = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = el.gate, .len = 8 };
+                    try pb2.download(0, std.mem.sliceAsBytes(pt));
+                    var tw = try self.a.alloc(u8, 8);
+                    defer self.a.free(tw);
+                    var tb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = pt[0], .len = 8 };
+                    try tb.download(0, tw);
+                    std.debug.print("GPUDUMP L1 exp223 suh {d:.3} {d:.3} trellis_ptr 0x{x} w0=0x{x}\n", .{ s0, s1, pt[0], std.mem.readInt(u32, tw[0..4], .little) });
+                }
                 var rl = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.router_logits, .len = rows * 512 * 4 };
                 try rl.download(0, std.mem.sliceAsBytes(self.host_router));
                 var bias_buf = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = L.router_bias, .len = 512 * 4 };
