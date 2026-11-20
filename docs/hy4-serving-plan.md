@@ -30,6 +30,11 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 49 (config field audit)
+- Found rms_norm_eps hardcoded 1e-6 in gpu_pack.Config while the pack's text_config says 1e-5 (10x). Fixed by reading all key fields from config.json: routed_scale, eps, hc_eps, hc_magnitude, swiglu_limit, topk, hidden, nope, rope, q_lora, kv_lora, vdim.
+- After all config fixes, greedy decode from BOS no longer loops but is still non-semantic. Serve responds normally (~10 tok/s, TTFT 0.5s) but chat output is garbled.
+- CRITICAL open question for next round: run the CPU BF16 reference on a REAL prompt token sequence. If CPU BF16 also produces non-semantic text, the 3bpw pack/model is the quality ceiling; if CPU is coherent, there is still a GPU-side numerical bug. This decides whether to keep debugging code or change the model pack.
+
 ## Progress round 48 (SECOND ROOT CAUSE — routed_scale hardcoded 1.0)
 - gpu_pack.Config.routed_scale was hardcoded 1.0 and never read from the pack's config.json, while the real value is 3.998. This made every routed-expert weight ~4x too small: GPU wts 0.068 vs CPU 0.277 (ratio 0.25), exactly 1/routed_scale.
 - Fixed: gpu_pack.load() now parses config.json → text_config.routed_scaling_factor. After fix: routed_scale=3.998, wts 0.270/0.264/..., matches CPU; expert_out 4x larger.

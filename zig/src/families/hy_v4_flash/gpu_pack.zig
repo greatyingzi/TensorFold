@@ -209,13 +209,38 @@ pub fn load(a: std.mem.Allocator, io: std.Io, d: *const cuda.Driver, dir: []cons
         var cdoc = std.json.parseFromSlice(std.json.Value, a, ct, .{}) catch null;
         if (cdoc) |*cd| {
             if (cd.value.object.get("text_config")) |tc| {
-                if (tc.object.get("routed_scaling_factor")) |rs| {
-                    cfg.routed_scale = switch (rs) {
-                        .float => |fv| @floatCast(fv),
-                        .integer => |iv| @floatFromInt(iv),
-                        else => cfg.routed_scale,
-                    };
-                }
+                const getf = struct {
+                    fn get(o: std.json.ObjectMap, key: []const u8, cur: f32) f32 {
+                        if (o.get(key)) |v| return switch (v) {
+                            .float => |fv| @floatCast(fv),
+                            .integer => |iv| @floatFromInt(iv),
+                            else => cur,
+                        };
+                        return cur;
+                    }
+                }.get;
+                const getn = struct {
+                    fn get(o: std.json.ObjectMap, key: []const u8, cur: usize) usize {
+                        if (o.get(key)) |v| return switch (v) {
+                            .integer => |iv| @intCast(iv),
+                            .float => |fv| @intFromFloat(fv),
+                            else => cur,
+                        };
+                        return cur;
+                    }
+                }.get;
+                cfg.routed_scale = getf(tc.object, "routed_scaling_factor", cfg.routed_scale);
+                cfg.eps = getf(tc.object, "rms_norm_eps", cfg.eps);
+                cfg.hc_eps = getf(tc.object, "hc_eps", cfg.hc_eps);
+                cfg.hc_magnitude = getf(tc.object, "hc_magnitude", cfg.hc_magnitude);
+                cfg.swiglu_limit = getf(tc.object, "swiglu_limit", cfg.swiglu_limit);
+                cfg.topk = getn(tc.object, "num_experts_per_tok", cfg.topk);
+                cfg.hidden = getn(tc.object, "hidden_size", cfg.hidden);
+                cfg.nope = getn(tc.object, "qk_nope_head_dim", cfg.nope);
+                cfg.rope = getn(tc.object, "qk_rope_head_dim", cfg.rope);
+                cfg.q_lora = getn(tc.object, "q_lora_rank", cfg.q_lora);
+                cfg.kv_lora = getn(tc.object, "kv_lora_rank", cfg.kv_lora);
+                cfg.vdim = getn(tc.object, "v_head_dim", cfg.vdim);
             }
         }
     } else |_| {}
