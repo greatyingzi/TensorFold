@@ -246,7 +246,7 @@ pub const Session = struct {
             } else null;
             try self.kv[li].attendSink(gpa, plan.kind, c.window, selected, c.index_ratio, q_nope, q_rope, ctx, sinks);
             // Official: attn_output *= sigmoid(gate_proj(hidden)) before o_proj.
-            const gate_n = try named(a, "layers.{d}.self_attn.linear_gate.weight", .{li});
+            const gate_n = try named(a, "layers.{d}.self_attn.gate_proj.weight", .{li});
             const gate_logits = try a.alloc(f32, heads * vdim);
             try matvecW(gate_logits, self.bag, gate_n, mixed, heads * vdim, h);
             for (ctx, gate_logits) |*v, lg| v.* *= ops.sigmoid(lg);

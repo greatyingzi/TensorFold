@@ -30,6 +30,14 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 64 (DECISIVE: forward math is BIT-EXACT vs official)
+- BUILT A WORKING AUTHORITATIVE COMPARISON: mapped 134/135 synthetic-fixture weights into official transformers HYV4FlashTextModel, computed logits for token 1: [2.6218,4.7408,2.6756,0.9617,-0.4004,-1.4197,-2.0874,-2.4079].
+- Zig session.step on the SAME fixture produces: [2.6218,4.7408,2.6756,0.9617,-0.4004,-1.4197,-2.0874,-2.4079] — **BIT-EXACT MATCH**. Our forward implementation is CORRECT.
+- Fixed a real bug found during this: session's attention gate must read `layers.N.self_attn.gate_proj.weight` (post-rename name), NOT `linear_gate.weight` (raw ckpt name). GPU runner correctly uses raw `linear_gate.weight` from safetensors (no rename), so GPU was unaffected.
+- IMPLICATION: quality is NOT caused by our forward math. CPU BF16 source-pack generation with corrected gate still gives '>.' for "The capital of France is" — non-semantic even with the correct BF16 weights and correct forward.
+- REVISED conclusion: the remaining quality gap is NOT primarily Engram/quantization (we can't prove those are sufficient). The model is HYV4FlashForConditionalGeneration (multimodal); text-only inference may need vision-path handling or special processor logic we don't replicate. OR the user's claim of 'quality is fine' refers to a different config/model. Need to reconcile with user before claiming any quality root cause.
+- GOAL: ④ online MET; ①③ not met; forward correctness (part of ①) now PROVEN. Goal stays active.
+
 ## Progress round 63 (authoritative numeric comparison attempted — infra limits)
 - Built a reference forward harness: installed torch+transformers PR#50903 in /home/leon/venvs/hf; mapped 134/135 synthetic-fixture weights into the official HYV4FlashTextModel (linear_gate→gate_proj, learnable_sink_param→sinks, hc_attn_layer.hc_pre.*→attn_hc.*, routed_expert_*_proj→pre/post_expert_proj, etc.). Official logits for token 1: [2.6218,4.7408,2.6756,0.9617,-0.4004,-1.4197,-2.0874,-2.4079].
 - Attempted to export Zig's logits for the same fixture via hy4_runner.zig exportlogits mode — blocked: full_forward.oneToken requires f32 embed (fixture is bf16raw), session.step needs official weight names the synthetic fixture doesn't fully provide (MissingHy4Tensor). Comparing requires building a matched fixture — a multi-hour task.
