@@ -366,6 +366,16 @@ pub const Runner = struct {
             const heads = L.heads; // 32 on DSA layers, 64 on sliding
             _ = heads_max;
             if (self.pos == 0 and li == 2) {
+            // dump each stream's first 4 values at L2 entry
+            const s4 = try self.a.alloc(u16, 8);
+            defer self.a.free(s4);
+            for (0..4) |ss| {
+                var sb4 = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.streams.ptr + ss * H * 2, .len = 16 };
+                try sb4.download(0, std.mem.sliceAsBytes(s4));
+                std.debug.print("GPUDUMP L2 stream{d} ", .{ss});
+                for (s4) |v| std.debug.print("{d:.3} ", .{@as(f32, @bitCast(@as(u32, v) << 16))});
+                std.debug.print("\n", .{});
+            }
             const sv = try self.a.alloc(u16, 512);
             defer self.a.free(sv);
             var sb2 = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = self.streams.ptr, .len = 1024 };
@@ -510,8 +520,36 @@ pub const Runner = struct {
             const gate_logits = self.gate_logits;
             try self.drows.?.rows(self.s, P.xbuf, cfg.hidden, L.attn_gate_w, gate_logits, heads * cfg.vdim, rows, heads * cfg.vdim, cfg.hidden);
             try ihc.gateSigmoid(self.s, P.attn_out, gate_logits, rows * heads * cfg.vdim);
+            if (self.pos == 0 and li == 1) {
+                const bb = try self.a.alloc(u16, 512);
+                defer self.a.free(bb);
+                var br = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.branch, .len = 1024 };
+                try br.download(0, std.mem.sliceAsBytes(bb));
+                var bs: f64 = 0;
+                var as: f64 = 0;
+                for (bb) |v| {
+                    const fv = @as(f32, @bitCast(@as(u32, v) << 16));
+                    bs += fv * fv;
+                }
+                const ab = try self.a.alloc(u16, 512);
+                defer self.a.free(ab);
+                var ar = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.attn_out, .len = 1024 };
+                try ar.download(0, std.mem.sliceAsBytes(ab));
+                for (ab) |v| {
+                    const fv = @as(f32, @bitCast(@as(u32, v) << 16));
+                    as += fv * fv;
+                }
+                std.debug.print("GPUDUMP L1 BRANCH rms {d:.4} attn_out_rms {d:.4}\n", .{ @sqrt(bs / 512.0), @sqrt(as / 512.0) });
+            }
             try dense.decode(self.s, L.o, P.attn_out, .bf16, rows, P.branch, .bf16);
             // Attention-side stream update: streams += attn_post_gates * branch (the CPU session does this).
+            if (self.pos == 0 and li == 2) {
+                const g4 = try self.a.alloc(f32, 8);
+                defer self.a.free(g4);
+                var gb = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.gates, .len = 32 };
+                try gb.download(0, std.mem.sliceAsBytes(g4));
+                std.debug.print("GPUDUMP L2 ATTNGATES pres {d:.3} {d:.3} {d:.3} {d:.3} posts {d:.3} {d:.3}\n", .{ g4[0], g4[1], g4[2], g4[3], g4[4], g4[5] });
+            }
             try ihc.gates(self.s, self.streams.ptr, p.attn_fn[li], p.attn_base[li], p.attn_scale[li], P.gates, P.gates + rows * HC * 4, rows, H, HC, cfg.hc_eps, cfg.hc_magnitude);
             try ihc.update(self.s, self.streams.ptr, P.branch, P.gates + rows * HC * 4, rows, H, HC);
             if (self.pos == 0 and li == 1) {

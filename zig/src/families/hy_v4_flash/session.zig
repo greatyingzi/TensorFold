@@ -168,7 +168,15 @@ pub const Session = struct {
                     for (0..h) |i| self.streams[s][i] += residual[s][i];
                 }
             }
+            if (self.dump_n > 0 and li == 2) {
+                for (0..hc) |ss| {
+                    std.debug.print("CPUDUMP L2 stream{d} ", .{ss});
+                    for (self.streams[ss][0..4]) |v| std.debug.print("{d:.3} ", .{v});
+                    std.debug.print("\n", .{});
+                }
+            }
             const ag = try ihc.gates(gpa, c, self.bag, li, "attn_hc", self.streams[0..hc]);
+            if (self.dump_n > 0 and li == 2) std.debug.print("CPUDUMP L2 ATTNGATES pres {d:.3} {d:.3} {d:.3} {d:.3} posts {d:.3} {d:.3}\n", .{ ag.pre[0], ag.pre[1], ag.pre[2], ag.pre[3], ag.post[0], ag.post[1] });
             defer ihc.gatesDeinit(gpa, ag);
             try ihc.collapse(ag, self.streams[0..hc], mixed);
             if (self.dump_n > 0) {
@@ -240,6 +248,13 @@ pub const Session = struct {
             try self.kv[li].attendSink(gpa, plan.kind, c.window, selected, c.index_ratio, q_nope, q_rope, ctx, sinks);
             const on = try named(a, "layers.{d}.self_attn.o_proj.weight", .{li});
             try matvecW(ffn, self.bag, on, ctx, h, heads * vdim);
+            if (self.dump_n > 0 and li == 1) {
+                var fs: f64 = 0;
+                for (ffn) |v| fs += @as(f64, v) * v;
+                var cs: f64 = 0;
+                for (ctx) |v| cs += @as(f64, v) * v;
+                std.debug.print("CPUDUMP L1 BRANCH rms {d:.4} ctx_rms {d:.4}\n", .{ @sqrt(fs / @as(f64, @floatFromInt(ffn.len))), @sqrt(cs / @as(f64, @floatFromInt(ctx.len))) });
+            }
             for (0..hc) |s| {
                 for (0..h) |i| self.next[s][i] = ag.post[s] * ffn[i] + self.streams[s][i];
             }

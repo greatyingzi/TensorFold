@@ -77,7 +77,9 @@ pub const Ihc = struct {
         a.add(int(rows));
         a.add(int(H));
         a.add(int(HC));
-        try launch_.launch(self.update_fn, .{ .grid = .{ .x = @intCast(rows), .y = @intCast(HC) }, .block = .{ .x = 256 } }, s, &a);
+        // Kernel indexes a FLAT rows*HC*H space using only blockIdx.x — the grid must be 1-D.
+        const total = rows * HC * H;
+        try launch_.launch(self.update_fn, .{ .grid = .{ .x = @intCast((total + 255) / 256) }, .block = .{ .x = 256 } }, s, &a);
     }
 
 

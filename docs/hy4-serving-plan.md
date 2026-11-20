@@ -30,6 +30,12 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 45 (ROOT CAUSE FOUND — update kernel grid was 2-D for a 1-D kernel)
+- `tf_hy4_stream_update` indexes a FLAT rows*HC*H space with only blockIdx.x, but the Zig binding launched grid (rows, HC): with rows=1, all four blocks wrote stream0's first 256 elements, leaving streams 1-3 UNTOUCHED. That is why they were identical and tiny throughout the whole decode.
+- Fixed grid to 1-D ceil(rows*HC*H/256). Immediately: L2 mixed first element **0.2256 vs CPU 0.2215** (near-exact), streams 1-3 now distinct and correctly scaled, token 0 → **478** (was 105409; CPU target 68).
+- This single bug explains the entire 13x divergence and the gibberish output: 3 of 4 residual streams were dead for every layer.
+- Next: re-run full A/B across all layers; the remaining stream0 discrepancy (~0.098 vs 0.062) may be from the duplicated writes during earlier layers or another small issue. Then rebuild serve and validate quality.
+
 ## Progress round 44 (all four FFN posts match; attention-side pres under audit)
 - CPU posts [0.118, 0.303, 0.407, 0.265] vs GPU [0.121, 0.310, 0.413, 0.271] — ALL MATCH. FFN gate path fully verified.
 - GPU streams0 RMS after L1 = 0.0897, internally consistent with posts × ffn. But GPU L2 mixed = 0.017 implies L2's attn pre-gates ~0.02 where ~0.2 is expected (CPU reaches 0.22 with the same stream math).
