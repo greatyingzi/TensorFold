@@ -262,11 +262,21 @@ pub const Session = struct {
 
             const fg = try ihc.gates(gpa, c, self.bag, li, "ffn_hc", self.streams[0..hc]);
             if (self.dump_n > 0 and li == 1) std.debug.print("CPUDUMP L1 FFNGATES posts {d:.3} {d:.3} {d:.3} {d:.3}\n", .{ fg.post[0], fg.post[1], fg.post[2], fg.post[3] });
+            if (self.dump_n > 0 and li == 1) {
+                std.debug.print("CPUDUMP L1 FFN8 ", .{});
+                for (ffn[0..8]) |v| std.debug.print("{d:.3} ", .{v});
+                std.debug.print("\n", .{});
+            }
             defer ihc.gatesDeinit(gpa, fg);
             try ihc.collapse(fg, self.streams[0..hc], mixed);
             const pn = try named(a, "layers.{d}.post_attention_layernorm.weight", .{li});
             try ops.rmsNorm(mixed, mixed, try f32s(self.bag, pn), c.eps);
             if (plan.moe) try moe.latentMoe(gpa, c, self.bag, li, mixed, ffn) else try denseFfn(gpa, c, self.bag, li, mixed, ffn);
+            if (self.dump_n > 0 and li == 1) {
+                std.debug.print("CPUDUMP L1 FFN_AFTER ", .{});
+                for (ffn[0..8]) |v| std.debug.print("{d:.3} ", .{v});
+                std.debug.print("\n", .{});
+            }
             if (self.dump_n > 0 and li == 1) {
                 var fss: f64 = 0;
                 for (ffn) |v| fss += @as(f64, v) * v;

@@ -30,6 +30,12 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 47 (acceptance-standard correction + token-loop symptom)
+- IMPORTANT: CPU reference uses BF16 source pack, GPU uses EXL3 3bpw pack — they CANNOT match element-wise; 3bpw quantization error compounds over 42 layers. Chasing exact CPU/GPU FFN equality past L2 was the wrong acceptance target.
+- Verified truth: root-cause stream-update grid fix makes L0/L1 match CPU exactly; from L2 the divergence is quantization + router divergence (GPU picks [497,218,223,3] at L1), which is expected for 3bpw.
+- Real quality symptom: greedy decode loops on token 478 ('**'): token 0→478→478×10. serve outputs '************************'.
+- Attention output at first token is zero (sink-only, by design — CPU ctx_rms=0 too). Next: verify KV cache accumulation across steps (cache write at pos*KW*2 is correct); check if step 2+ attention actually reads accumulated cache.
+
 ## Progress round 46 (full 42-layer A/B after grid fix)
 - L00 rmsdiff 0.0000 (exact), L01 0.0030, L02 0.3157 (first value 0.226 vs CPU 0.221 matches, but other 7 dims differ), then divergence accumulates every layer; L38+ completely off (sign flips).
 - Root-cause grid fix is confirmed correct for L0/L1; a residual per-layer numerical drift remains and compounds. Token 0 → 478 (CPU target 68).

@@ -733,6 +733,15 @@ pub const Runner = struct {
                 } else false;
                 std.debug.print("hy4 diag L{d} ffn nan={} v0=0x{x}\n", .{ li, bad, fh[0] });
             }
+            if (self.pos == 0 and li == 1) {
+                const f8 = try self.a.alloc(u16, 16);
+                defer self.a.free(f8);
+                var fb8 = cuda.memory.DeviceBuffer{ .d = self.d, .ptr = P.ffn, .len = 32 };
+                try fb8.download(0, std.mem.sliceAsBytes(f8));
+                std.debug.print("GPUDUMP L1 FFN8 ", .{});
+                for (f8) |v| std.debug.print("{d:.3} ", .{@as(f32, @bitCast(@as(u32, v) << 16))});
+                std.debug.print("\n", .{});
+            }
             try ihc.gates(self.s, self.streams.ptr, p.ffn_fn[li], p.ffn_base[li], p.ffn_scale[li], P.gates, P.gates + rows * HC * 4, rows, H, HC, cfg.hc_eps, cfg.hc_magnitude);
             if (self.pos == 0 and li == 1) {
                 const g4 = try self.a.alloc(f32, 8);
