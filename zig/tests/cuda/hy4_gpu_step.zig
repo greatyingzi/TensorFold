@@ -30,7 +30,20 @@ pub fn main(init: std.process.Init) !void {
         for (logits, 0..) |v, j| {
             if (v > logits[best]) best = j;
         }
-        std.debug.print("STEP {d}: token {d} -> {d} logit {d:.4}\n", .{ i, tok, best, logits[best] });
+        // top-5 diagnostic
+        const tmp = try a.alloc(f32, logits.len);
+        defer a.free(tmp);
+        @memcpy(tmp, logits);
+        std.debug.print("STEP {d}: token {d} -> {d} logit {d:.4} top5:", .{ i, tok, best, logits[best] });
+        for (0..5) |_| {
+            var bi: usize = 0;
+            for (tmp, 0..) |v, j| {
+                if (v > tmp[bi]) bi = j;
+            }
+            std.debug.print(" {d}:{d:.2}", .{ bi, tmp[bi] });
+            tmp[bi] = -1e30;
+        }
+        std.debug.print("\n", .{});
         tok = best;
     }
 }

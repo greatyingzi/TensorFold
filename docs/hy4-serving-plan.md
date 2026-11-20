@@ -30,6 +30,17 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 59 (full authoritative audit complete)
+- Systematically diffed our entire forward against authoritative modeling_hy_v4_flash.py. CONFIRMED CORRECT: IHC gates/head/stream-init, attention scaling, gate weight naming (linear_gate), sink attention, router fp32+group topk, expert swiglu clamp, dense_rows fp32 output, MoE combine order.
+- CONFIRMED FIXED this session: (1) post_proj_norm after o_proj [shared CPU+GPU bug], (2) attention sigmoid gate in CPU session [CPU-only bug]. Build succeeded, serve v8 deployed. Quality changed from '**' repetition to '|' repetition but STILL non-semantic.
+- KNOWN REMAINING GAPS vs authoritative:
+  * compressed_indexer (IndexPool sparse attention) not implemented in GPU path (simplified MLA chunks). Official indexer selects KV before attention on indexed layers.
+  * Engram (64B params) entirely absent from GPU path; needs 127GB additional memory — impossible on single GB10 (needs TP8).
+  * RoPE mrope_section [12,10,10] uses head_dim=96; our simplified rope=64 — equivalent for pure text (3 planes identical) but unverified.
+  * lm_head/embed_tokens tied in official ConditionalGeneration (`_tied_weights_keys`); our pack has separate tensors — need to verify values are identical.
+- BLOCKER: DGX network is intermittently unreachable (repeated 100% packet loss), blocking verification. This is infrastructure, not code.
+- HONEST STATUS: 6+ real bugs fixed, but quality goal NOT achieved on single GB10. Goal stays active.
+
 ## Progress round 58 (SHARED-FORWARD BUG 2: CPU session missing attention gate)
 - Authoritative modeling_hy_v4_flash.py audit continued: official attention applies `attn_output *= sigmoid(gate_proj(hidden))` BEFORE o_proj (line 634), then o_proj, then post_proj_norm.
 - CPU session.zig was MISSING this attention gate entirely (only GPU runner had it via linear_gate.weight → gateSigmoid). So the CPU BF16 reference computed wrong attention output — this is why CPU reference produced gibberish even with correct BPE encoding. Fixed: session.zig now loads `linear_gate.weight`, computes gate_logits = matvec(mixed), applies sigmoid to ctx before o_proj.
