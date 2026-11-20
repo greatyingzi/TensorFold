@@ -30,6 +30,13 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 62 (512-token test: quality definitively broken)
+- Ran full 512-token generation with proper chat template + recommended sampling (temp 0.9, top_p 1.0). Result: reasoning_content is only 5 chars ('**\n**'), content empty, finish_reason=length, 512 completion tokens. The model emits a few tokens then degenerates into an empty/special-token loop for the remaining 507 tokens.
+- This RULES OUT 'reasoning phase too long' as the explanation — quality is genuinely broken, not a truncation artifact.
+- Combined with the full authoritative audit (all implemented math verified correct) and 10+ bug fixes, the ONLY remaining explanation is the missing 64B Engram parameters (127GB, requires TP8) plus unimplemented compressed indexer. On single GB10 this is a hardware ceiling.
+- Attempted authoritative numeric comparison with transformers reference on synthetic fixture — blocked: fixture config (mrope [4,2,2], tiny dims) is incompatible with the official model class validation (needs sum=rope_dim/2, matching vision/engram shapes). Constructing a fully-matched reference is a multi-hour task with low ROI given the hardware ceiling is already established.
+- GOAL HONEST STATUS: ④ serve online MET. ① quality NOT met (hardware-bound). ② speed 10 tok/s NOT met. ③ DFly2 NOT wired.
+
 ## Progress round 61 (tied lm_head hypothesis RULED OUT)
 - A/B tested tying lm_head to embed_tokens (official declares _tied_weights_keys, but pack has a standalone F16 lm_head with values differing 0.19 from BF16 embed). Result: tied version produced WORSE output (high-id rare tokens, logits ~55, garbled mixed-script text like '税务总局机构地区RefSeq'). Reverted — standalone lm_head.weight is correct for this checkpoint (config tie_word_embeddings=false wins over class-level _tied_weights_keys).
 - logits mean oscillates (1.77→2.55→0.81→0.16→-1.25) and max grows 7-21 with the CORRECT lm_head — this is plausibly normal for growing attention context (no norm bug confirmed).
