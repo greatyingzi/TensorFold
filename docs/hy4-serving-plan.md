@@ -30,6 +30,15 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 57 (authoritative modeling code obtained — post_proj_norm bug found)
+- Installed transformers PR #50903 (official Hy4 support) into /home/leon/venvs/hf on DGX; obtained authoritative modeling_hy_v4_flash.py (1791 lines) — the ground truth forward implementation.
+- Line-by-line diff against our session.zig: IHC HyperConnection math CONFIRMED CORRECT (pre/post sigmoid formula, weighted collapse, fp32). Embedding→4-streams expand CONFIRMED CORRECT (line 1153 official).
+- FOUND REAL BUG: official HYV4FlashAttention.forward ends with `self.post_proj_norm(self.o_proj(attn_output))` — an RMSNorm after o_proj on EVERY layer. Our CPU session AND GPU runner both omitted it; the weight `self_attn.post_proj_norm.weight` exists in the pack (47 tensors) and gpu_pack even LOADS it (post_proj_norm[li]) but never applies it.
+- Fixed both: session.zig adds rmsNorm(ffn, post_proj_norm) after o_proj; gpu_runner.zig adds norms.rms(branch, post_proj_norm) after o_proj decode.
+- This is a shared-forward defect (both CPU/GPU wrong) — exactly the class of bug that explains why CPU BF16 reference was also non-semantic.
+- OTHER OFFICIAL DETAILS TO AUDIT NEXT: indexer (IndexPool sparse attention) — our GPU path uses simplified MLA chunks without the compressed indexer; attn `s_aux=sinks`; post_mlp_layernorm (MoE=Identity, dense=has norm, but pack has 0 such tensors → maybe folded).
+- DGX became unreachable (100% packet loss) right after the fix was built; verification of the fix pending network recovery.
+
 ## Progress round 56 (DEFINITIVE ROOT CAUSE — hardware/engram, not code)
 - Official README + pack inspection: Hy4 Flash is a 220B model with **64B Engram params (1/3 of model)**, one of three core architectural innovations. EXL3 pack carries 126.9 GB of UNQUANTIZED BF16 Engram weights (4 x 15.84 GB embedding tables at layers 1/11/21/31).
 - Our GPU path has ZERO engram support: gpu_pack doesn't load engram tensors, gpu_runner never calls engram.inject, serve sets engram.count=0. We are running the model with 1/3 of its parameters disabled → gibberish is EXPECTED.

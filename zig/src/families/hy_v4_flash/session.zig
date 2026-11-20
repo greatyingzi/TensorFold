@@ -247,6 +247,10 @@ pub const Session = struct {
             try self.kv[li].attendSink(gpa, plan.kind, c.window, selected, c.index_ratio, q_nope, q_rope, ctx, sinks);
             const on = try named(a, "layers.{d}.self_attn.o_proj.weight", .{li});
             try matvecW(ffn, self.bag, on, ctx, h, heads * vdim);
+            // Official HYV4FlashAttention applies post_proj_norm after o_proj (every layer).
+            const ppn = try named(a, "layers.{d}.self_attn.post_proj_norm.weight", .{li});
+            defer a.free(ppn);
+            try ops.rmsNorm(ffn, ffn, try f32s(self.bag, ppn), c.eps);
             if (self.dump_n > 0 and li == 1) {
                 var fs: f64 = 0;
                 for (ffn) |v| fs += @as(f64, v) * v;

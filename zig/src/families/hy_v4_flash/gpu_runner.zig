@@ -551,6 +551,8 @@ pub const Runner = struct {
                 std.debug.print("GPUDUMP L1 BRANCH rms {d:.4} attn_out_rms {d:.4}\n", .{ @sqrt(bs / 512.0), @sqrt(as / 512.0) });
             }
             try dense.decode(self.s, L.o, P.attn_out, .bf16, rows, P.branch, .bf16);
+            // Official: post_proj_norm after o_proj (weight already loaded by gpu_pack).
+            try norms.rms(self.s, P.branch, .bf16, p.post_proj_norm[li], P.branch, .bf16, rows, H, cfg.eps);
             // Attention-side stream update: streams += attn_post_gates * branch (the CPU session does this).
             if (self.pos == 0 and li == 2) {
                 const g4 = try self.a.alloc(f32, 8);
