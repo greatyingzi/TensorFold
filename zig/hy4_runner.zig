@@ -186,17 +186,16 @@ fn genRef(a: std.mem.Allocator, io: std.Io, dir: []const u8, prompt_csv: []const
         try toks.append(a, v);
     }
     if (toks.items.len == 0) try toks.append(a, 0);
-    for (toks.items) |t| _ = try s.step(t);
+    var logits: []const f32 = &.{};
+    for (toks.items) |t| logits = try s.step(t);
     std.debug.print("GENREF prompt done ({d} tokens)\n", .{toks.items.len});
-    var tok = toks.items[toks.items.len - 1];
     for (0..steps) |i| {
-        const logits = try s.step(tok);
         var best: usize = 0;
         for (logits, 0..) |v, j| {
             if (v > logits[best]) best = j;
         }
-        std.debug.print("GENREF step {d}: {d} -> {d}\n", .{ i, tok, best });
-        tok = best;
+        std.debug.print("GENREF step {d}: -> {d}\n", .{ i, best });
+        logits = try s.step(best);
     }
 }
 

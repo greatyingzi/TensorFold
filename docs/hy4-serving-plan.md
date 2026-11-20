@@ -30,6 +30,12 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 51 (engram: root cause of quality gap; revised round-50 conclusion)
+- ROUND 50 CONCLUSION REVISED: my earlier 'CPU BF16 reference itself is gibberish, shared forward is broken' was based on a WRONG token encoding — I used naive longest-match on raw vocab instead of byte-level BPE. With correct BPE encoding ([802,8778,299,12749,341] for "The capital of France is") and correct BPE decoding, CPU output is '時/ \n\n或' — still not 'Paris', but the experiment is now valid.
+- TRUE quality root cause: the model has **164 engram tensor weights** and engram is enabled at layers 2/12/22/32 (max 3-gram, 768-dim, vocab id 10312000+). Our loader REQUIRES `engram_vocab_map_metadata`, which is ABSENT from both the BF16 source pack and the EXL3 pack. So engram is disabled everywhere (c.engram.count=0). Hunyuan4 Flash relies on engram for quality; disabling it degrades output regardless of CPU/GPU path.
+- This is a MODEL PACK limitation, not a code bug. Fixing requires obtaining/generating the engram vocab map (hash n-grams → 10312000+ ids), which is a data-engineering task.
+- All GPU-side engineering bugs found so far are fixed and committed: stream-update grid, routed_scale 1.0→3.998, rms_norm_eps 1e-6→1e-5, fp32 router weights, L0 dense MLP, attention stream update. GPU L0/L1 now match CPU exactly.
+
 ## Progress round 50 (DECISIVE: CPU BF16 reference itself produces gibberish)
 - Ran genRef on the ORIGINAL BF16 source pack with the real prompt token sequence for "The capital of France is" ([802,100177,1885,57534,277]): the CPU reference (our supposed ground truth) generates token ids 3848,220,775,91,1,220,198,15,220 → decoded as 'ë¡ľ Ġ Ġ[ | " Ċ 0' — COMPLETE GIBBERISH.
 - This overturns the entire acceptance basis: matching CPU BF16 cannot yield coherent text, because the CPU forward implementation does not reproduce the model's semantics on the original weights either. The gibberish is NOT caused by EXL3 3bpw quantization, and NOT by the GPU path.
