@@ -30,6 +30,12 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 52 (engram path made runnable — dtype + OOM fixes)
+- Enabled engram (count=4) in genRef for the first time. Fixed two engram implementation bugs: (1) engram.zig f32s() rejected bf16raw tensors — now decodes bf16→f32 with allocator; (2) multi_head_embedding.embedding.weight is ~15.8GB (vocab 10.3M × 768 bf16); full decode to f32 OOM'd — now decodes ONLY the 16 needed head rows on demand.
+- With engram enabled, CPU genRef runs all 42 layers without OOM/error. Output on "The capital of France is" is still non-semantic ('\na \n\n與 ·'), so engram alone is not the quality silver bullet; bare completion on this chat/reasoning model is inherently weak.
+- IMPORTANT GAP: GPU runner has NO engram path at all. CPU session now supports engram, GPU does not → CPU/GPU diverge if engram is enabled. Serve keeps engram disabled (count=0) for consistency.
+- Engram fixes committed; need a decision: implement engram in GPU (host-computed injection, small data) OR keep disabled everywhere and accept the model's reduced quality.
+
 ## Progress round 51 (engram: root cause of quality gap; revised round-50 conclusion)
 - ROUND 50 CONCLUSION REVISED: my earlier 'CPU BF16 reference itself is gibberish, shared forward is broken' was based on a WRONG token encoding — I used naive longest-match on raw vocab instead of byte-level BPE. With correct BPE encoding ([802,8778,299,12749,341] for "The capital of France is") and correct BPE decoding, CPU output is '時/ \n\n或' — still not 'Paris', but the experiment is now valid.
 - TRUE quality root cause: the model has **164 engram tensor weights** and engram is enabled at layers 2/12/22/32 (max 3-gram, 768-dim, vocab id 10312000+). Our loader REQUIRES `engram_vocab_map_metadata`, which is ABSENT from both the BF16 source pack and the EXL3 pack. So engram is disabled everywhere (c.engram.count=0). Hunyuan4 Flash relies on engram for quality; disabling it degrades output regardless of CPU/GPU path.

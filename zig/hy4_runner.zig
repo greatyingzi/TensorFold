@@ -173,8 +173,8 @@ fn dumpRef(a: std.mem.Allocator, io: std.Io, dir: []const u8, token: usize) !voi
 fn genRef(a: std.mem.Allocator, io: std.Io, dir: []const u8, prompt_csv: []const u8, steps: usize) !void {
     const adm = try loader.inspect(a, io, dir);
     var c = try config.read(a, io, dir);
-    c.engram.count = 0;
-    c.allow_no_engram = true;
+    // Engram enabled: lookup_table is stored in the checkpoint weights; loader.meta has a c.vocab fallback.
+    std.debug.print("GENREF engram.count={d} allow_no={}\n", .{ c.engram.count, c.allow_no_engram });
     var bag = try weights.loadStreaming(a, io, dir, &adm.meta, 0);
     defer bag.deinit();
     var s = try session.Session.init(a, &c, &bag, 8 + steps);

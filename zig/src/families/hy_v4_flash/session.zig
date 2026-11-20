@@ -149,7 +149,6 @@ pub const Session = struct {
         const mixed = try a.alloc(f32, h);
         const ffn = try a.alloc(f32, h);
         for (0..c.layers) |li| {
-            std.debug.print("LAYER {d}\n", .{li});
             const plan = try graph.layerPlan(c, li);
             const nope = if (plan.kind == .sliding) c.swa_qk_nope else c.qk_nope;
             const rope = if (plan.kind == .sliding) c.swa_qk_rope else c.qk_rope;

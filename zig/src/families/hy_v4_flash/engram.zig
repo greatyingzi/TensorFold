@@ -5,12 +5,19 @@ const weights = @import("weights.zig");
 const ops = @import("ops.zig");
 const rng = @import("engram_rng.zig");
 
-fn f32s(bag: *const weights.Bag, name: []const u8) ![]const f32 {
+fn f32s(gpa: std.mem.Allocator, bag: *const weights.Bag, name: []const u8) ![]const f32 {
     const t = bag.get(name) orelse return error.MissingHy4Tensor;
     return switch (t.value) {
         .f32s => |v| v,
+        .bf16raw => |v| {
+            const out = try gpa.alloc(f32, v.len / 2);
+            for (out, 0..) |*o, i| {
+                const bits = std.mem.readInt(u16, v[i * 2 ..][0..2], .little);
+                o.* = @bitCast(@as(u32, bits) << 16);
+            }
+            return out;
+        },
         .i32s, .affine4 => error.ExpectedF32Tensor,
-        .bf16raw => return error.ExpectedF32Tensor,
     };
 }
 
@@ -68,7 +75,12 @@ pub fn inject(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weigh
     const table = try i32s(bag, table_name);
     const embed_name = try concat(gpa, &.{ prefix, "multi_head_embedding.embedding.weight" });
     defer gpa.free(embed_name);
-    const embed = try f32s(bag, embed_name);
+    const embed_t = bag.get(embed_name) orelse return error.MissingHy4Tensor;
+    const embed_raw: []const u8 = switch (embed_t.value) {
+        .bf16raw => |v| v,
+        .f32s => return error.UnexpectedF32Embedding,
+        else => return error.ExpectedF32Tensor,
+    };
     var primes: [16]u32 = undefined;
     for (c.engram.layers[0..c.engram.count]) |e| {
         if (e.id - 1 == layer) primes = e.primes;
@@ -84,8 +96,14 @@ pub fn inject(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weigh
         const norm_name = try std.fmt.allocPrint(gpa, "{s}lookup_per_head_norms.{d}.weight", .{ prefix, h });
         defer gpa.free(norm_name);
         const vec = flat[h * head_dim ..][0..head_dim];
-        const row = embed[(offset + @as(usize, id)) * head_dim ..][0..head_dim];
-        try ops.rmsNorm(vec, row, try f32s(bag, norm_name), c.eps);
+        const row_base = (offset + @as(usize, id)) * head_dim * 2;
+        const row = try gpa.alloc(f32, head_dim);
+        defer gpa.free(row);
+        for (0..head_dim) |j| {
+            const bits = std.mem.readInt(u16, embed_raw[row_base + j * 2 ..][0..2], .little);
+            row[j] = @bitCast(@as(u32, bits) << 16);
+        }
+        try ops.rmsNorm(vec, row, try f32s(gpa, bag, norm_name), c.eps);
         offset += primes[h];
     }
 
@@ -96,7 +114,7 @@ pub fn inject(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weigh
     const value = try gpa.alloc(f32, c.hidden);
     defer gpa.free(value);
     try matvecW(value, bag, vp_name, flat, c.hidden, total);
-    const gamma = try f32s(bag, gamma_name);
+    const gamma = try f32s(gpa, bag, gamma_name);
     var sum: f64 = 0;
     for (value) |v| sum += @as(f64, v) * @as(f64, v);
     const inv = 1.0 / @sqrt(sum / @as(f64, @floatFromInt(c.hidden)) + @as(f64, c.eps));
@@ -116,14 +134,14 @@ pub fn inject(gpa: std.mem.Allocator, c: *const config.Config, bag: *const weigh
         const query = try gpa.alloc(f32, c.hidden);
         defer gpa.free(query);
         try matvecW(key, bag, kn, flat, c.hidden, total);
-        try ops.rmsNorm(key, key, try f32s(bag, kd), c.eps);
-        try ops.rmsNorm(query, streams[s], try f32s(bag, qd), c.eps);
+        try ops.rmsNorm(key, key, try f32s(gpa, bag, kd), c.eps);
+        try ops.rmsNorm(query, streams[s], try f32s(gpa, bag, qd), c.eps);
         var dot: f64 = 0;
         for (key, query) |a, b| dot += @as(f64, a) * @as(f64, b);
         dot *= 1.0 / @sqrt(@as(f64, @floatFromInt(c.hidden)));
         const mag: f64 = if (dot < 0) -@sqrt(@max(1e-6, -dot)) else @sqrt(@max(1e-6, dot));
         const gate = ops.sigmoid(@floatCast(mag));
-        const scale = try f32s(bag, sn);
+        const scale = try f32s(gpa, bag, sn);
         if (scale.len != c.hidden) return error.BadEngramShape;
         for (out[s], value, scale) |*o, v, sc| o.* = (gate + sc) * v;
     }
