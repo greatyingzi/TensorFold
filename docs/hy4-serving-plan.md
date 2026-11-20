@@ -30,6 +30,14 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 58 (SHARED-FORWARD BUG 2: CPU session missing attention gate)
+- Authoritative modeling_hy_v4_flash.py audit continued: official attention applies `attn_output *= sigmoid(gate_proj(hidden))` BEFORE o_proj (line 634), then o_proj, then post_proj_norm.
+- CPU session.zig was MISSING this attention gate entirely (only GPU runner had it via linear_gate.weight → gateSigmoid). So the CPU BF16 reference computed wrong attention output — this is why CPU reference produced gibberish even with correct BPE encoding. Fixed: session.zig now loads `linear_gate.weight`, computes gate_logits = matvec(mixed), applies sigmoid to ctx before o_proj.
+- Combined with round-57 post_proj_norm fix, both CPU and GPU now follow official attention math. L0/L1 A/B must be re-run after DGX recovery to confirm they still match (both changed), then full quality check.
+- Confirmed CORRECT via authoritative code: IHC math, embedding→4 streams, attention scaling (1/sqrt(nope+rope)), router fp32, gate weight naming (linear_gate.weight = official gate_proj in state_dict).
+- AUDIT ITEMS REMAINING: RoPE uses mrope_section [12,10,10] with dim=96 (head_dim), our implementation uses rope=60/64 simplified — potential mismatch; compressed indexer (IndexPool) not implemented in GPU path (uses simplified MLA chunks); Engram not in GPU (hardware-bound).
+- DGX unreachable (100% packet loss) — verification pending.
+
 ## Progress round 57 (authoritative modeling code obtained — post_proj_norm bug found)
 - Installed transformers PR #50903 (official Hy4 support) into /home/leon/venvs/hf on DGX; obtained authoritative modeling_hy_v4_flash.py (1791 lines) — the ground truth forward implementation.
 - Line-by-line diff against our session.zig: IHC HyperConnection math CONFIRMED CORRECT (pre/post sigmoid formula, weighted collapse, fp32). Embedding→4-streams expand CONFIRMED CORRECT (line 1153 official).
