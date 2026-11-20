@@ -30,6 +30,13 @@
 - `hy4-gpu-bench exl3layer /pack 1`: nine dense projections of a real layer, 0.136 ms/token = 7379 tok/s dense-only. `kv_a` has n=576 (not a multiple of 128) and is refused by the kernel — needs a split/padding path.
 - Codebook for the real pack is `mul1` per config; marker tensor names vary (`mcg` on q_a), so config is authoritative.
 
+## Progress round 54 (official chat structure template deployed; template ruled out as root cause)
+- Replaced the hand-written minimal chat template (bare {{ content }}) with a static expansion of the official chat_template.jinja structure: <｜hy_start:opensource｜>role<｜hy_middle:opensource｜>content<｜hy_end:opensource｜> plus reasoning_mode no_think and <think> tags. TensorFold's jinja engine cannot evaluate the official template's .format() calls, so HYTK was pre-expanded to the literal ':opensource'.
+- Template works: prompt token count jumped from 1 → 36 (special tokens tokenized correctly), serve stable HTTP 200.
+- BUT output is STILL gibberish ('在或者直接tract以提高...'). So the chat template was NOT the root cause. Combined with CPU BF16 reference also producing non-semantic output with correct BPE encoding, the defect is in the SHARED forward implementation (session.zig / weights.zig / rotary.zig), OR the model pack requires data we don't have.
+- Serve v5 is the stable deliverable (proper template, 6GiB reserve, HTTP 200, ~10 tok/s).
+- GOAL NOT MET: quality is not semantic. Remaining requires either (a) authoritative external reference (vLLM/HF) to diff our shared forward math, or (b) obtaining missing model data. Speed (10 vs 63 tok/s) and DFly2 GPU wiring also outstanding.
+
 ## Progress round 53 (serve stability restored)
 - Serve was crash-looping (Exit 137 / AttentionCacheFull) because textWeightBytes() hardcoded 70 GiB admission while actual GPU-resident pack is 65.32 GiB and device free memory had dropped below 82 GiB (12.2 GiB reserve). Fixed by lowering reserve to 6 GiB and setting CUDA limit 96 GB in /home/leon/hy4serve_tpl.sh (host-side config, no rebuild needed). Also lowered native.zig textWeightBytes 70→66 GiB (needs rebuild to take effect).
 - Serve v4 now stable: HTTP 200, Up 4+ min, 'model 65.32 GiB; 26.8 GiB left after 6.0 GiB reserve', loaded in 202s.
